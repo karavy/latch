@@ -1,0 +1,63 @@
+# Two distinct ApiCallTemplates run in sequence by one Workflow against the in-cluster
+# mock API. Templates are never executed: the Workflow runs an owned ApiCall per step.
+apiVersion: dinova.one/v1alpha1
+kind: ApiCallTemplate
+metadata:
+  name: tilt-create-vdc
+  namespace: default
+spec:
+  method: POST
+  endpoint: http://mock-api.apicall-debug.svc.cluster.local:8080/vdcs
+  headers:
+    Content-Type: application/json
+  body: '{"name":"acme"}'
+  timeoutSeconds: 30
+---
+apiVersion: dinova.one/v1alpha1
+kind: ApiCallTemplate
+metadata:
+  name: tilt-create-network
+  namespace: default
+spec:
+  method: POST
+  endpoint: http://mock-api.apicall-debug.svc.cluster.local:8080/networks
+  headers:
+    Content-Type: application/json
+  body: '{"vdcId":"","name":"lan"}'
+  timeoutSeconds: 30
+---
+apiVersion: dinova.one/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: tilt-vdc-network
+  namespace: default
+spec:
+  steps:
+    - name: create-vdc
+      api:
+        templateRef:
+          name: tilt-create-vdc
+        # Publish the id of the new VDC under a name; any later step can use it.
+        outputs:
+          - name: vdcId
+            from: /id
+    - name: create-network
+      api:
+        templateRef:
+          name: tilt-create-network
+        # Set that output into the request body, replacing the empty vdcId.
+        inputs:
+          - step: create-vdc
+            output: vdcId
+            to: /vdcId
+---
+apiVersion: dinova.one/v1alpha1
+kind: Workflow
+metadata:
+  name: tilt-vdc-network
+  namespace: default
+spec:
+  templates:
+    - name: run
+      templateRef:
+        name: tilt-vdc-network

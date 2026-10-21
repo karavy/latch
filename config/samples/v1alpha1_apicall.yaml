@@ -1,0 +1,29 @@
+apiVersion: dinova.one/v1alpha1
+kind: ApiCall
+metadata:
+  labels:
+    app.kubernetes.io/name: latch
+    app.kubernetes.io/managed-by: kustomize
+  name: apicall-sample
+spec:
+  # Allow https://api.example.com with --apicall-allowed-origins on the manager.
+  method: POST
+  endpoint: https://api.example.com/resources
+  timeoutSeconds: 120
+  headers:
+    Content-Type: application/json
+  body: '{"name":"example"}'
+  authentication:
+    type: OAuth2ClientCredentials
+    tokenURL: https://auth.example.com/oauth2/token
+    clientIDSecretRef:
+      name: oauth-client-credentials
+      key: client-id
+    clientSecretSecretRef:
+      name: oauth-client-credentials
+      key: client-secret
+    clientAuthenticationMethod: ClientSecretBasic
+    scopes:
+      - resources:write
+    audience: resources-api
+  storeResponseBody: true

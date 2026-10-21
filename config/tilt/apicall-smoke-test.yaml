@@ -1,0 +1,38 @@
+apiVersion: dinova.one/v1alpha1
+kind: ApiCallTemplate
+metadata:
+  name: tilt-mock-echo
+  namespace: default
+spec:
+  method: POST
+  endpoint: http://mock-api.apicall-debug.svc.cluster.local:8080/echo?source=tilt
+  headers:
+    Content-Type: application/json
+    X-Debug-Header: local-cluster
+  body: |
+    {"message":"hello from the operator running in Tilt"}
+  timeoutSeconds: 30
+---
+# A template is never executed: the Workflow runs an owned ApiCall created from it.
+apiVersion: dinova.one/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: tilt-mock-echo-run
+  namespace: default
+spec:
+  steps:
+    - name: echo
+      api:
+        templateRef:
+          name: tilt-mock-echo
+---
+apiVersion: dinova.one/v1alpha1
+kind: Workflow
+metadata:
+  name: tilt-mock-echo-run
+  namespace: default
+spec:
+  templates:
+    - name: run
+      templateRef:
+        name: tilt-mock-echo-run

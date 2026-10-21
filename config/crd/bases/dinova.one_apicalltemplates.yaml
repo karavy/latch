@@ -1,0 +1,237 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: apicalltemplates.dinova.one
+spec:
+  group: dinova.one
+  names:
+    kind: ApiCallTemplate
+    listKind: ApiCallTemplateList
+    plural: apicalltemplates
+    singular: apicalltemplate
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.method
+      name: Method
+      type: string
+    - jsonPath: .spec.endpoint
+      name: Endpoint
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: ApiCallTemplate is the Schema for the apicalltemplates API
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the template; it has no status because nothing
+              executes it
+            properties:
+              authentication:
+                description: |-
+                  Authentication references a Secret in the template's namespace. Unlike an
+                  ApiCall, a template stays editable; Workflows read it when a step starts.
+                properties:
+                  audience:
+                    description: Audience is an optional provider-specific token audience
+                      parameter.
+                    maxLength: 2048
+                    type: string
+                  clientAuthenticationMethod:
+                    default: ClientSecretBasic
+                    description: ClientAuthenticationMethod determines how client
+                      credentials are sent to the token endpoint.
+                    enum:
+                    - ClientSecretBasic
+                    - ClientSecretPost
+                    type: string
+                  clientIDSecretRef:
+                    description: ClientIDSecretRef selects the OAuth client ID from
+                      a same-namespace Secret.
+                    properties:
+                      key:
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                      name:
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                    required:
+                    - key
+                    - name
+                    type: object
+                  clientSecretSecretRef:
+                    description: ClientSecretSecretRef selects the OAuth client secret
+                      from a same-namespace Secret.
+                    properties:
+                      key:
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                      name:
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                    required:
+                    - key
+                    - name
+                    type: object
+                  headerName:
+                    description: HeaderName is the header containing an API key.
+                    maxLength: 128
+                    pattern: ^[A-Za-z0-9-]+$
+                    type: string
+                  passwordSecretRef:
+                    description: APISecretKeyReference selects a key from a same-namespace
+                      Secret.
+                    properties:
+                      key:
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                      name:
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                    required:
+                    - key
+                    - name
+                    type: object
+                  scopes:
+                    description: Scopes requested from the OAuth authorization server.
+                    items:
+                      type: string
+                    maxItems: 32
+                    type: array
+                  tokenSecretRef:
+                    description: APISecretKeyReference selects a key from a same-namespace
+                      Secret.
+                    properties:
+                      key:
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                      name:
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                    required:
+                    - key
+                    - name
+                    type: object
+                  tokenURL:
+                    description: TokenURL is the OAuth 2.0 token endpoint. Its HTTPS
+                      origin must be allowlisted.
+                    maxLength: 2048
+                    pattern: ^https://[^\s]+$
+                    type: string
+                  type:
+                    enum:
+                    - Bearer
+                    - Basic
+                    - APIKey
+                    - OAuth2ClientCredentials
+                    type: string
+                  usernameSecretRef:
+                    description: APISecretKeyReference selects a key from a same-namespace
+                      Secret.
+                    properties:
+                      key:
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                      name:
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                    required:
+                    - key
+                    - name
+                    type: object
+                required:
+                - type
+                type: object
+                x-kubernetes-validations:
+                - message: Bearer requires tokenSecretRef
+                  rule: self.type != 'Bearer' || has(self.tokenSecretRef)
+                - message: Basic requires usernameSecretRef and passwordSecretRef
+                  rule: self.type != 'Basic' || (has(self.usernameSecretRef) && has(self.passwordSecretRef))
+                - message: APIKey requires tokenSecretRef and headerName
+                  rule: self.type != 'APIKey' || (has(self.tokenSecretRef) && has(self.headerName))
+                - message: OAuth2ClientCredentials requires tokenURL, clientIDSecretRef
+                    and clientSecretSecretRef
+                  rule: self.type != 'OAuth2ClientCredentials' || (has(self.tokenURL)
+                    && has(self.clientIDSecretRef) && has(self.clientSecretSecretRef))
+              body:
+                description: Body is sent verbatim; a step body mapping requires a
+                  JSON object body.
+                maxLength: 65536
+                type: string
+              debug:
+                description: |-
+                  Debug makes the ApiCalls created from this template validate and log their request
+                  without sending it. See ApiCallSpec.Debug.
+                type: boolean
+              endpoint:
+                description: Endpoint must also be permitted by the operator's origin
+                  allowlist.
+                maxLength: 2048
+                pattern: ^https?://[^\s]+$
+                type: string
+              headers:
+                additionalProperties:
+                  type: string
+                description: Headers contains non-secret request headers. Use authentication
+                  for credentials.
+                maxProperties: 32
+                type: object
+              method:
+                description: Method is the HTTP verb.
+                enum:
+                - GET
+                - PUT
+                - POST
+                - DELETE
+                type: string
+              timeoutSeconds:
+                default: 120
+                description: TimeoutSeconds bounds the whole request, including response
+                  body reading.
+                format: int32
+                maximum: 3600
+                minimum: 1
+                type: integer
+            required:
+            - endpoint
+            - method
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources: {}

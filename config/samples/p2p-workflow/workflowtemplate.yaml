@@ -1,0 +1,416 @@
+# Finds the first free /31 in the automation block, checks the client segment name and creates
+# the segment (in debug mode), publishing the nsx_segment_* values. A Workflow runs it with the
+# values it gives to the parameters (see workflow.yaml).
+apiVersion: dinova.one/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  labels:
+    app.kubernetes.io/name: latch
+    app.kubernetes.io/component: p2p-workflow
+  name: p2p-free-subnet
+spec:
+  parameters:
+    # Name of the iTop block the subnets come from (step list-blocks matches it exactly).
+    - name: blockName
+      description: Name of the iTop block the subnets come from.
+      default: BLK-AUTOMAZIONE-P2P
+    # The NSX environment: the env_name of name-check and create.
+    - name: envName
+      description: NSX environment, the env_name of name-check and create.
+      default: vcloud-r1.dinova.cloud
+    - name: clientName
+      description: Client the segment is created for. It has no default, so the Workflow must give it.
+    # Ends the name of the segment: "P2P-" + clientName + segmentSuffix.
+    - name: segmentSuffix
+      description: Ends the segment name, after P2P- and the client name.
+      default: -NET
+    # The vCloud organization step get-orgs looks for, by its exact name.
+    - name: vcloudOrgName
+      description: Name of the vCloud organization, as get-orgs lists it. It has no default, so the Workflow must give it.
+    # The FortiFlex program step get-flexvm-programs looks for, by its exact serial.
+    - name: flexvmSerial
+      description: Serial of the FortiFlex program, as get-flexvm-programs lists it. It has no default, so the Workflow must give it.
+    # The FortiFlex configuration step get-flexvm-configs looks for, by its exact name (the names
+    # are listed with that step).
+    - name: firewallBundle
+      description: Name of the FortiFlex configuration (the service bundle of the firewall), as get-flexvm-configs lists it. It has no default, so the Workflow must give it.
+    # The name of the virtual machine the deliver step asks for.
+    - name: vmName
+      description: Name of the FortiGate virtual machine to deliver. It has no default, so the Workflow must give it.
+    # The contract the deliver step records (rif_contratto).
+    - name: rifContratto
+      description: Contract reference of the delivery. It has no default, so the Workflow must give it.
+    # The name of the VDC the deliver step creates (create_vdc is true). No API says it: it is a
+    # choice, so the Workflow gives it, for example <client>-VDC.
+    - name: vdcName
+      description: Name of the VDC the delivery creates. It has no default, so the Workflow must give it.
+    # The provider storage profile step get-storage-profiles looks for, by its exact name. If the
+    # environment has no such profile, the workflow fails there.
+    - name: storageProfile
+      description: Name of the provider storage profile, as get-storage-profiles lists it. It has no default, so the Workflow must give it.
+    # The size of the FortiGate virtual machine (cpu_count, ram_gb) and of the VDC the delivery
+    # creates (vdc_cpu_mhz, vdc_ram_mb, vdc_storage_mb and the reservations in percent). Numbers, written as text: the
+    # deliver step turns them into numbers.
+    - name: cpuCount
+      description: Number of vCPUs of the FortiGate (cpu_count). It has no default, so the Workflow must give it.
+    - name: ramGb
+      description: Memory of the FortiGate in GB (ram_gb). It has no default, so the Workflow must give it.
+    - name: vdcCpuMhz
+      description: CPU of the VDC in MHz (vdc_cpu_mhz). It has no default, so the Workflow must give it.
+    - name: vdcRamMb
+      description: Memory of the VDC in MB (vdc_ram_mb). It has no default, so the Workflow must give it.
+    - name: vdcStorageMb
+      description: Storage of the VDC in MB (vdc_storage_mb). It has no default, so the Workflow must give it.
+    - name: vdcCpuReservationPct
+      description: Share of the VDC CPU that is reserved, in percent (vdc_cpu_reservation_pct). It has no default, so the Workflow must give it.
+    - name: vdcRamReservationPct
+      description: Share of the VDC memory that is reserved, in percent (vdc_ram_reservation_pct). It has no default, so the Workflow must give it.
+  steps:
+    # 1. GET /api/v1/p2p/itop/blocks, then publish the id of the block whose name is exactly
+    #    the blockName parameter. If no block has that name, the workflow fails.
+    - name: list-blocks
+      api:
+        templateRef:
+          name: p2p-list-blocks
+        # GET only: up to 3 requests, 5 seconds apart, on 429/502/503/504 and network errors.
+        retry:
+          maxAttempts: 3
+          backoffSeconds: 5
+          statusCodes: [429, 502, 503, 504]
+          onTransportErrors: true
+        outputs:
+          - name: blockId
+            from: /id
+            select:
+              array: /blocks
+              where:
+                - {field: /name, equalsParameter: blockName}
+
+    # 2. GET /api/v1/p2p/itop/block-subnets?block_id=<blockId>&mask=31, then publish the
+    #    first subnet with available: true, as returned by the portal. If none is free,
+    #    the workflow fails.
+    - name: free-subnet
+      api:
+        templateRef:
+          name: p2p-block-subnets
+        # GET only: up to 3 requests, 5 seconds apart, on 429/502/503/504 and network errors.
+        retry:
+          maxAttempts: 3
+          backoffSeconds: 5
+          statusCodes: [429, 502, 503, 504]
+          onTransportErrors: true
+        inputs:
+          - {step: list-blocks, output: blockId, toQuery: block_id}
+        outputs:
+          - name: subnet
+            from: ""
+            select:
+              array: /subnets
+              where:
+                - {field: /available, equalsJSON: "true"}
+          # The same first free subnet, field by field, for the steps that need one value.
+          - name: subnet_ip
+            from: /ip
+            select:
+              array: /subnets
+              where:
+                - {field: /available, equalsJSON: "true"}
+          - name: subnet_mask
+            from: /mask
+            select:
+              array: /subnets
+              where:
+                - {field: /available, equalsJSON: "true"}
+          - name: subnetBlockId
+            from: /block_id
+            select:
+              array: /subnets
+              where:
+                - {field: /available, equalsJSON: "true"}
+          # The first and the second address of the /31, as the portal gives them: the gateway
+          # (nsx_ip) and the address of the machine (tenant_ip).
+          - name: nsx_ip
+            from: /nsx_ip
+            select:
+              array: /subnets
+              where:
+                - {field: /available, equalsJSON: "true"}
+          - name: tenant_ip
+            from: /tenant_ip
+            select:
+              array: /subnets
+              where:
+                - {field: /available, equalsJSON: "true"}
+
+    # 3. GET /api/v1/p2p/segments/name-check?client_name=<clientName>&env_name=<envName>,
+    #    then publish the "ok" field: whether the segment name is available. If ok is not
+    #    true the workflow fails here, as Failed with reason ExpectationFailed, and the
+    #    next steps do not run.
+    - name: check-name
+      api:
+        templateRef:
+          name: p2p-segment-name-check
+        # GET only: up to 3 requests, 5 seconds apart, on 429/502/503/504 and network errors.
+        retry:
+          maxAttempts: 3
+          backoffSeconds: 5
+          statusCodes: [429, 502, 503, 504]
+          onTransportErrors: true
+        inputs:
+          - {parameter: clientName, toQuery: client_name}
+          - {parameter: envName, toQuery: env_name}
+        expect:
+          - {pointer: /ok, equalsJSON: "true", message: "The segment name is not available"}
+        outputs:
+          - {name: ok, from: /ok}
+
+    # 4. GET /api/v1/fortigate-vm/envs, then publish the id of the delivery environment that is
+    #    of type vcloud and whose vcloud_env_name is exactly the envName parameter, together with
+    #    the vcenter_env_name of that same environment. It runs before the segment is created, so a wrong environment fails the workflow while there is still
+    #    nothing to undo. If no environment matches, the workflow fails.
+    - name: get-env
+      api:
+        templateRef:
+          name: p2p-fortigate-envs
+        retry:
+          maxAttempts: 3
+          backoffSeconds: 5
+          statusCodes: [429, 502, 503, 504]
+          onTransportErrors: true
+        outputs:
+          - name: env_id
+            from: /id
+            select:
+              where:
+                - {field: /env_type, equalsJSON: '"vcloud"'}
+                - {field: /vcloud_env_name, equalsParameter: envName}
+          # The vCenter of the same environment, for the templates step.
+          - name: vcenter_env_name
+            from: /vcenter_env_name
+            select:
+              where:
+                - {field: /env_type, equalsJSON: '"vcloud"'}
+                - {field: /vcloud_env_name, equalsParameter: envName}
+
+    # 5. GET /api/v1/fortigate-vm/templates?vcenter_env_name=<vcenter_env_name>, the FortiGate
+    #    templates of the vCenter of the environment chosen by get-env, then publish as template_id
+    #    the id of the first one in the list. There is no way yet to say which template is meant,
+    #    so with several templates this may not be the one you want (nor a free one).
+    - name: get-templates
+      api:
+        templateRef:
+          name: p2p-fortigate-templates
+        retry:
+          maxAttempts: 3
+          backoffSeconds: 5
+          statusCodes: [429, 502, 503, 504]
+          onTransportErrors: true
+        inputs:
+          - {step: get-env, output: vcenter_env_name, toQuery: vcenter_env_name}
+        outputs:
+          - {name: template_id, from: /0/id}
+
+    # 6. GET /api/v1/fortigate-vm/vcloud/{env_id}/orgs, the vCloud organizations of the
+    #    environment chosen by get-env, then publish as org_id the id of the one whose name is
+    #    exactly the vcloudOrgName parameter. If there is none, the workflow fails.
+    - name: get-orgs
+      api:
+        templateRef:
+          name: p2p-vcloud-orgs
+        retry:
+          maxAttempts: 3
+          backoffSeconds: 5
+          statusCodes: [429, 502, 503, 504]
+          onTransportErrors: true
+        inputs:
+          - {step: get-env, output: env_id, toPath: env_id}
+        outputs:
+          - name: org_id
+            from: /id
+            select:
+              where:
+                - {field: /name, equalsParameter: vcloudOrgName}
+
+    # 7. GET /api/v1/fortigate-vm/flexvm/programs, then publish as program_id the id of the
+    #    program whose serial is exactly the flexvmSerial parameter. If there is none, the
+    #    workflow fails.
+    - name: get-flexvm-programs
+      api:
+        templateRef:
+          name: p2p-flexvm-programs
+        retry:
+          maxAttempts: 3
+          backoffSeconds: 5
+          statusCodes: [429, 502, 503, 504]
+          onTransportErrors: true
+        outputs:
+          - name: program_id
+            from: /id
+            select:
+              where:
+                - {field: /serial, equalsParameter: flexvmSerial}
+
+    # 8. GET /api/v1/fortigate-vm/flexvm/configs?program_id=<program_id>, the FortiFlex
+    #    configurations of the program chosen by get-flexvm-programs, then publish as config_id the
+    #    id of the one whose name is exactly the firewallBundle parameter. If there is none, the
+    #    workflow fails.
+    #    The names with product_type_id 1 (Service Bundle) that the portal listed, any of which
+    #    firewallBundle can be:
+    #      - Istanza FortiGate SMALL - Funzionalità Base
+    #      - Istanza FortiGate SMALL - Funzionalità UTP Bundle
+    #      - Istanza FortiGate SMALL - Funzionalità Base - 3VDOM
+    #      - Istanza FortiGate SMALL - Funzionalità Base + ATP
+    #      - Istanza FortiGate MEDIUM - Funzionalità Base
+    #      - Istanza FortiGate MEDIUM - Funzionalità UTP Bundle
+    #      - Istanza FortiGate MEDIUM - Funzionalità UTP Bundle 3 VDOM
+    #      - Istanza FortiGate SHARED01
+    #      - Istanza FortiGate SHARED02
+    - name: get-flexvm-configs
+      api:
+        templateRef:
+          name: p2p-flexvm-configs
+        retry:
+          maxAttempts: 3
+          backoffSeconds: 5
+          statusCodes: [429, 502, 503, 504]
+          onTransportErrors: true
+        inputs:
+          - {step: get-flexvm-programs, output: program_id, toQuery: program_id}
+        outputs:
+          - name: config_id
+            from: /id
+            select:
+              where:
+                - {field: /name, equalsParameter: firewallBundle}
+
+    # 9. GET /api/v1/fortigate-vm/vcloud/{env_id}/provider-storage-profiles, the storage profiles
+    #    of the environment chosen by get-env. It checks that the one the storageProfile parameter
+    #    names exists, by its exact name, and publishes it as storage_profile. If there is none the
+    #    workflow fails here, before anything is created: this step comes before create-segment.
+    - name: get-storage-profiles
+      api:
+        templateRef:
+          name: p2p-vcloud-storage-profiles
+        retry:
+          maxAttempts: 3
+          backoffSeconds: 5
+          statusCodes: [429, 502, 503, 504]
+          onTransportErrors: true
+        inputs:
+          - {step: get-env, output: env_id, toPath: env_id}
+        outputs:
+          - name: storage_profile
+            from: /name
+            select:
+              where:
+                - {field: /name, equalsParameter: storageProfile}
+
+    # 10. POST /api/v1/p2p/segments/create: creates the T1 and the segment on NSX-T and
+    #    updates the subnet in iTop. The step has debug: true, so the operator builds
+    #    the request and prints it in its log without sending it. Remove debug from the
+    #    template to send it for real.
+    #    Not retried: a 502 may have left the T1 behind, and repeating a POST is not safe.
+    - name: create-segment
+      api:
+        templateRef:
+          name: p2p-segment-create
+        inputs:
+          - {parameter: envName, to: /env_name}
+          - {parameter: clientName, to: /client_name}
+          - {step: free-subnet, output: subnet_ip, to: /subnet_ip}
+          - {step: free-subnet, output: subnet_mask, to: /subnet_mask}
+          - {step: free-subnet, output: subnetBlockId, to: /itop_block_id}
+        outputs:
+          # Built from known values, so they are published when the step completes, in debug
+          # mode too. The ones below use the ones above them.
+          # seg_name = "P2P-" + clientName + segmentSuffix, for example P2P-EXMACHINA-NET.
+          - name: seg_name
+            template: "P2P-{{parameters.clientName}}{{parameters.segmentSuffix}}"
+          - {name: nsx_segment_id, template: "{{outputs.seg_name}}"}
+          - {name: nsx_segment_name, template: "{{outputs.seg_name}}"}
+          # subnet_ip/subnet_mask of step 2, for example 178.239.21.34/31.
+          - name: nsx_segment_network
+            template: "{{steps.free-subnet.outputs.subnet_ip}}/{{steps.free-subnet.outputs.subnet_mask}}"
+
+    # 11. POST /api/v1/fortigate-vm/vcloud/{env_id}/deliver: delivers the FortiGate. The step has
+    #    debug: true, so the operator builds the request and prints it in its log without sending
+    #    it. Remove debug from the step to send it for real.
+    #    Not retried: repeating a POST that may have started a delivery is not safe.
+    #    Nothing in the template body is left to fill by hand. create_vdc, the VDC sizes and the netmask (the subnets are /31)
+    #    are fixed in the body too.
+    - name: deliver
+      api:
+        templateRef:
+          name: p2p-fortigate-deliver
+        inputs:
+          - {step: get-env, output: env_id, toPath: env_id}
+          - {parameter: vmName, to: /vm_name}
+          - {parameter: vdcName, to: /vdc_name}
+          - {step: get-storage-profiles, output: storage_profile, to: /storage_profile}
+          - {parameter: cpuCount, to: /cpu_count, asNumber: true}
+          - {parameter: ramGb, to: /ram_gb, asNumber: true}
+          - {parameter: vdcCpuMhz, to: /vdc_cpu_mhz, asNumber: true}
+          - {parameter: vdcRamMb, to: /vdc_ram_mb, asNumber: true}
+          - {parameter: vdcStorageMb, to: /vdc_storage_mb, asNumber: true}
+          - {parameter: vdcCpuReservationPct, to: /vdc_cpu_reservation_pct, asNumber: true}
+          - {parameter: vdcRamReservationPct, to: /vdc_ram_reservation_pct, asNumber: true}
+          - {step: get-templates, output: template_id, to: /template_id}
+          - {parameter: vcloudOrgName, to: /org_name}
+          - {step: get-orgs, output: org_id, to: /org_id}
+          - {step: create-segment, output: nsx_segment_id, to: /nsx_segment_id}
+          - {step: create-segment, output: nsx_segment_name, to: /nsx_segment_name}
+          - {step: create-segment, output: nsx_segment_network, to: /nsx_segment_network}
+          - {step: free-subnet, output: tenant_ip, to: /assigned_ip}
+          - {step: free-subnet, output: nsx_ip, to: /gateway}
+          # The id is a number and the portal wants a string.
+          - {step: get-flexvm-configs, output: config_id, to: /flexvm_config_id, asString: true}
+          - {parameter: clientName, to: /cliente}
+          - {parameter: rifContratto, to: /rif_contratto}
+        outputs:
+          # The delivery runs as a job: the portal answers 202 with its id. In debug mode nothing
+          # is sent and there is no answer, so debugJSON stands in for it; the step that waits is
+          # in debug mode too, and only logs the request it would make.
+          - {name: job_id, from: /job_id, debugJSON: '"CHANGEME"'}
+
+    # 12. GET /api/v1/fortigate-vm/jobs/{job_id}, repeated until the job's status is "success".
+    #     The repetition happens inside the step's ApiCall, which stays one object (see its
+    #     status.attempts): a poll with no templateRef sends the step's own request again. A
+    #     delivery is fourteen phases and tens of minutes, so it asks every 30 seconds, up to 100
+    #     requests in all (about 50 minutes), and fails with PollTimeout if the job is not done
+    #     by then. A job that ends as "failed" is not recognised as such: the step keeps asking
+    #     until the time is up. Answers that mean "not now" (429, 502, 503, 504, network errors)
+    #     do not fail the step; they count as an attempt that was not ready.
+    - name: wait-deliver
+      api:
+        templateRef:
+          name: p2p-fortigate-job
+        inputs:
+          - {step: deliver, output: job_id, toPath: job_id}
+        poll:
+          intervalSeconds: 30
+          maxAttempts: 100
+          conditionJSONPointer: /status
+          equalsJSON: '"success"'
+          retryOnStatusCodes: [429, 502, 503, 504]
+          retryOnTransportErrors: true
+        # Read from the last answer, the one with status success.
+        outputs:
+          - {name: id, from: /id}
+          - {name: vm_name, from: /vm_name}
+          - {name: license_serial, from: /license_serial}
+          - {name: licensing_mode, from: /licensing_mode}
+          - {name: last_completed_step, from: /last_completed_step}
+          - {name: total_steps, from: /total_steps}
+
+  # Run when this Workflow is deleted from Kubernetes (api steps only). They can use the
+  # parameters and the outputs of the steps above, and a step that needs an
+  # output of a step that never completed is skipped. If one fails, the Workflow stays in
+  # Kubernetes with its finalizer, so cleanup is not lost; remove the finalizer to give up.
+  # Step names are unique across steps and deleteSteps.
+  #
+  # deleteSteps:
+  #   - name: delete-segment
+  #     api:
+  #       templateRef: {name: p2p-segment-delete}
+  #       inputs:
+  #         - {parameter: clientName, toQuery: client_name}

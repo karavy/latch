@@ -1,0 +1,9 @@
+apiVersion: dinova.one/v1alpha1
+kind: BaseCluster
+metadata:
+  labels:
+    app.kubernetes.io/name: latch
+    app.kubernetes.io/managed-by: kustomize
+  name: basecluster-sample
+spec:
+  # TODO(user): Add fields here

@@ -1,0 +1,29 @@
+apiVersion: dinova.one/v1alpha1
+kind: TerraformTemplate
+metadata:
+  labels:
+    app.kubernetes.io/name: latch
+    app.kubernetes.io/managed-by: kustomize
+  name: terraformtemplate-sample
+spec:
+  # Files are copied into the step's ConfigMap when the step starts. *.tf.tmpl files are
+  # rendered by terraform-engine: <FGT_NAME> is replaced by the step input whose target is
+  # /name (keys are upper-cased, so /vdc_id becomes <FGT_VDC_ID>). The same inputs are also
+  # written to terraform.auto.tfvars.json, so var.vdc_id works in plain .tf files.
+  files:
+    - name: variables.tf
+      content: |
+        variable "vdc_id" {
+          type = string
+        }
+    - name: main.tf.tmpl
+      content: |
+        resource "terraform_data" "vdc" {
+          input = "<FGT_VDC_ID>"
+        }
+
+        # Outputs can be published by the step (terraform.outputs); the backend is added by the
+        # runner, so the template does not declare one.
+        output "network_id" {
+          value = terraform_data.vdc.id
+        }

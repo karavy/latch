@@ -1,0 +1,21 @@
+# syntax=docker/dockerfile:1.7
+FROM golang:1.26 AS builder
+ARG TARGETOS=linux
+ARG TARGETARCH
+
+WORKDIR /workspace
+# These named BuildKit contexts point at the local sibling module checkouts.
+COPY --from=api-engine / /workspace/api-engine
+COPY --from=terraform-engine / /workspace/terraform-engine
+COPY . /workspace/latch
+
+WORKDIR /workspace/latch
+RUN go mod download
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -trimpath -ldflags="-s -w" -o /manager ./cmd
+
+FROM gcr.io/distroless/static:nonroot
+WORKDIR /
+COPY --from=builder /manager /manager
+USER 65532:65532
+ENTRYPOINT ["/manager"]

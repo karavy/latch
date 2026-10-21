@@ -1,0 +1,266 @@
+# The portal origin must be allowed on the manager:
+#   --apicall-allowed-origins=https://dev-portal.admin.dinova.cloud:8453
+#
+# The API key is read from a Secret in this namespace; it is not part of these files:
+#   kubectl create secret generic portal-api-key --from-literal=api-key="$PORTAL_API_KEY"
+# The key needs the role that allows reading the iTop blocks.
+apiVersion: dinova.one/v1alpha1
+kind: ApiCallTemplate
+metadata:
+  labels:
+    app.kubernetes.io/name: latch
+    app.kubernetes.io/component: p2p-workflow
+  name: p2p-list-blocks
+spec:
+  method: GET
+  endpoint: https://dev-portal.admin.dinova.cloud:8453/api/v1/p2p/itop/blocks
+  timeoutSeconds: 120
+  headers:
+    Accept: application/json
+  authentication:
+    type: APIKey
+    headerName: X-API-Key
+    tokenSecretRef:
+      name: portal-api-key
+      key: api-key
+---
+apiVersion: dinova.one/v1alpha1
+kind: ApiCallTemplate
+metadata:
+  labels:
+    app.kubernetes.io/name: latch
+    app.kubernetes.io/component: p2p-workflow
+  name: p2p-block-subnets
+spec:
+  method: GET
+  # block_id is added by the workflow (input toQuery) from the block found by list-blocks.
+  endpoint: https://dev-portal.admin.dinova.cloud:8453/api/v1/p2p/itop/block-subnets?mask=31
+  timeoutSeconds: 120
+  headers:
+    Accept: application/json
+  authentication:
+    type: APIKey
+    headerName: X-API-Key
+    tokenSecretRef:
+      name: portal-api-key
+      key: api-key
+---
+apiVersion: dinova.one/v1alpha1
+kind: ApiCallTemplate
+metadata:
+  labels:
+    app.kubernetes.io/name: latch
+    app.kubernetes.io/component: p2p-workflow
+  name: p2p-segment-name-check
+spec:
+  method: GET
+  # client_name and env_name (Workflow parameters) are added by the
+  # workflow, with input toQuery.
+  endpoint: https://dev-portal.admin.dinova.cloud:8453/api/v1/p2p/segments/name-check
+  timeoutSeconds: 120
+  headers:
+    Accept: application/json
+  authentication:
+    type: APIKey
+    headerName: X-API-Key
+    tokenSecretRef:
+      name: portal-api-key
+      key: api-key
+---
+apiVersion: dinova.one/v1alpha1
+kind: ApiCallTemplate
+metadata:
+  labels:
+    app.kubernetes.io/name: latch
+    app.kubernetes.io/component: p2p-workflow
+  name: p2p-segment-create
+spec:
+  method: POST
+  endpoint: https://dev-portal.admin.dinova.cloud:8453/api/v1/p2p/segments/create
+  # Debug on the template and on the step that uses it: the operator only logs the request.
+  # Responses: 409 when the T1 or
+  # the segment already exist, 502 when NSX-T cannot be reached or the creation fails. After
+  # a 502 the T1 can be left on NSX-T: there is no rollback.
+  timeoutSeconds: 120
+  headers:
+    Content-Type: application/json
+    Accept: application/json
+  # The workflow fills every field but itop_subnet_id, which stays null.
+  body: '{"env_name":"","client_name":"","subnet_ip":"","subnet_mask":"","itop_subnet_id":null,"itop_block_id":""}'
+  authentication:
+    type: APIKey
+    headerName: X-API-Key
+    tokenSecretRef:
+      name: portal-api-key
+      key: api-key
+---
+apiVersion: dinova.one/v1alpha1
+kind: ApiCallTemplate
+metadata:
+  labels:
+    app.kubernetes.io/name: latch
+    app.kubernetes.io/component: p2p-workflow
+  name: p2p-fortigate-envs
+spec:
+  method: GET
+  endpoint: https://dev-portal.admin.dinova.cloud:8453/api/v1/fortigate-vm/envs
+  timeoutSeconds: 120
+  headers:
+    Accept: application/json
+  authentication:
+    type: APIKey
+    headerName: X-API-Key
+    tokenSecretRef:
+      name: portal-api-key
+      key: api-key
+---
+apiVersion: dinova.one/v1alpha1
+kind: ApiCallTemplate
+metadata:
+  labels:
+    app.kubernetes.io/name: latch
+    app.kubernetes.io/component: p2p-workflow
+  name: p2p-fortigate-templates
+spec:
+  method: GET
+  # vcenter_env_name is added by the workflow (input toQuery) from the environment found by get-env.
+  endpoint: https://dev-portal.admin.dinova.cloud:8453/api/v1/fortigate-vm/templates
+  timeoutSeconds: 120
+  headers:
+    Accept: application/json
+  authentication:
+    type: APIKey
+    headerName: X-API-Key
+    tokenSecretRef:
+      name: portal-api-key
+      key: api-key
+---
+apiVersion: dinova.one/v1alpha1
+kind: ApiCallTemplate
+metadata:
+  labels:
+    app.kubernetes.io/name: latch
+    app.kubernetes.io/component: p2p-workflow
+  name: p2p-vcloud-orgs
+spec:
+  method: GET
+  # {env_id} is replaced by the workflow (input toPath) with the id found by get-env.
+  endpoint: https://dev-portal.admin.dinova.cloud:8453/api/v1/fortigate-vm/vcloud/{env_id}/orgs
+  timeoutSeconds: 120
+  headers:
+    Accept: application/json
+  authentication:
+    type: APIKey
+    headerName: X-API-Key
+    tokenSecretRef:
+      name: portal-api-key
+      key: api-key
+---
+apiVersion: dinova.one/v1alpha1
+kind: ApiCallTemplate
+metadata:
+  labels:
+    app.kubernetes.io/name: latch
+    app.kubernetes.io/component: p2p-workflow
+  name: p2p-flexvm-programs
+spec:
+  method: GET
+  endpoint: https://dev-portal.admin.dinova.cloud:8453/api/v1/fortigate-vm/flexvm/programs
+  timeoutSeconds: 120
+  headers:
+    Accept: application/json
+  authentication:
+    type: APIKey
+    headerName: X-API-Key
+    tokenSecretRef:
+      name: portal-api-key
+      key: api-key
+---
+apiVersion: dinova.one/v1alpha1
+kind: ApiCallTemplate
+metadata:
+  labels:
+    app.kubernetes.io/name: latch
+    app.kubernetes.io/component: p2p-workflow
+  name: p2p-fortigate-deliver
+spec:
+  method: POST
+  # {env_id} is replaced by the workflow (input toPath) with the id found by get-env.
+  endpoint: https://dev-portal.admin.dinova.cloud:8453/api/v1/fortigate-vm/vcloud/{env_id}/deliver
+  # Debug on the template and on the step that uses it: the operator only logs the request.
+  timeoutSeconds: 120
+  headers:
+    Content-Type: application/json
+    Accept: application/json
+  # The workflow fills the empty strings. Every value that varies is filled by the workflow; the rest
+  # is fixed: create_vdc, the VDC sizes, and the netmask of a /31.
+  body: '{"vm_name":"","template_id":"","org_name":"","org_id":"","vdc_name":"","create_vdc":true,"nsx_segment_id":"","nsx_segment_name":"","nsx_segment_network":"","assigned_ip":"","netmask":"255.255.255.254","gateway":"","flexvm_config_id":"","cliente":"","rif_contratto":"","cpu_count":0,"ram_gb":0,"vdc_cpu_mhz":0,"vdc_ram_mb":0,"vdc_storage_mb":0,"vdc_cpu_reservation_pct":0,"vdc_ram_reservation_pct":0,"storage_profile":""}'
+  authentication:
+    type: APIKey
+    headerName: X-API-Key
+    tokenSecretRef:
+      name: portal-api-key
+      key: api-key
+---
+apiVersion: dinova.one/v1alpha1
+kind: ApiCallTemplate
+metadata:
+  labels:
+    app.kubernetes.io/name: latch
+    app.kubernetes.io/component: p2p-workflow
+  name: p2p-flexvm-configs
+spec:
+  method: GET
+  # program_id is added by the workflow (input toQuery) from the program found by get-flexvm-programs.
+  endpoint: https://dev-portal.admin.dinova.cloud:8453/api/v1/fortigate-vm/flexvm/configs
+  timeoutSeconds: 120
+  headers:
+    Accept: application/json
+  authentication:
+    type: APIKey
+    headerName: X-API-Key
+    tokenSecretRef:
+      name: portal-api-key
+      key: api-key
+---
+apiVersion: dinova.one/v1alpha1
+kind: ApiCallTemplate
+metadata:
+  labels:
+    app.kubernetes.io/name: latch
+    app.kubernetes.io/component: p2p-workflow
+  name: p2p-fortigate-job
+spec:
+  method: GET
+  # {job_id} is replaced by the workflow (input toPath) with the id the deliver step published.
+  endpoint: https://dev-portal.admin.dinova.cloud:8453/api/v1/fortigate-vm/jobs/{job_id}
+  timeoutSeconds: 120
+  headers:
+    Accept: application/json
+  authentication:
+    type: APIKey
+    headerName: X-API-Key
+    tokenSecretRef:
+      name: portal-api-key
+      key: api-key
+---
+apiVersion: dinova.one/v1alpha1
+kind: ApiCallTemplate
+metadata:
+  labels:
+    app.kubernetes.io/name: latch
+    app.kubernetes.io/component: p2p-workflow
+  name: p2p-vcloud-storage-profiles
+spec:
+  method: GET
+  # {env_id} is replaced by the workflow (input toPath) with the id found by get-env.
+  endpoint: https://dev-portal.admin.dinova.cloud:8453/api/v1/fortigate-vm/vcloud/{env_id}/provider-storage-profiles
+  timeoutSeconds: 120
+  headers:
+    Accept: application/json
+  authentication:
+    type: APIKey
+    headerName: X-API-Key
+    tokenSecretRef:
+      name: portal-api-key
+      key: api-key

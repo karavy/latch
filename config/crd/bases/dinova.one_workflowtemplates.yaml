@@ -1,0 +1,2174 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: workflowtemplates.dinova.one
+spec:
+  group: dinova.one
+  names:
+    kind: WorkflowTemplate
+    listKind: WorkflowTemplateList
+    plural: workflowtemplates
+    singular: workflowtemplate
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: WorkflowTemplate is the Schema for the workflowtemplates API
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the template; it has no status because nothing
+              executes it
+            properties:
+              deleteSteps:
+                description: |-
+                  DeleteSteps run, strictly in order, when the Workflow that ran the template is deleted
+                  from Kubernetes, and only api steps are allowed. They can read the parameters and the
+                  outputs of the steps above; a step that needs an output of a step that never completed
+                  is skipped, because there is nothing to undo. A failed delete step keeps the Workflow in
+                  Kubernetes (its finalizer stays), so that cleanup is never dropped silently. Step names
+                  are unique across steps and deleteSteps.
+                items:
+                  description: WorkflowStep is exactly one API or Terraform operation.
+                  properties:
+                    api:
+                      description: |-
+                        WorkflowAPIStep runs an ApiCall created from an existing ApiCallTemplate and
+                        may poll until ready.
+                      properties:
+                        debug:
+                          description: |-
+                            Debug makes the step validate and log its request without sending it, like debug on the
+                            ApiCallTemplate: either one is enough. The step completes with no response, so it
+                            publishes only the outputs that need none (see WorkflowOutput.Template and DebugJSON).
+                            The requests of a poll are not affected.
+                          type: boolean
+                        expect:
+                          description: |-
+                            Expect lists conditions on the response of the initial request. If one does not hold,
+                            the workflow fails, and the request is not retried. They are checked before the outputs
+                            are published, and not on the responses of a poll.
+                          items:
+                            description: WorkflowExpectation requires a field of a
+                              JSON response to have a given value.
+                            properties:
+                              equalsJSON:
+                                description: EqualsJSON is the expected value as JSON
+                                  (for example true, "ready" or 3).
+                                maxLength: 1024
+                                type: string
+                              message:
+                                description: |-
+                                  Message explains a failure in the workflow status. The response itself is never copied
+                                  there.
+                                maxLength: 256
+                                type: string
+                              pointer:
+                                description: Pointer is a JSON Pointer into the response,
+                                  for example /ok.
+                                maxLength: 512
+                                pattern: ^/.*$
+                                type: string
+                            required:
+                            - equalsJSON
+                            - pointer
+                            type: object
+                          maxItems: 8
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        inputs:
+                          description: |-
+                            Inputs set values published by earlier steps (see Outputs) into the copied body.
+                            The body must be a JSON object.
+                          items:
+                            description: |-
+                              WorkflowInput sets a value into the request of a step: into a JSON object body (To) or
+                              into the query string of the endpoint (ToQuery) or into its path (ToPath). The value comes from exactly one source:
+                              an output of an earlier step (Step and Output), a Workflow parameter (Parameter), or a
+                              key of a ConfigMap (ConfigMapKeyRef).
+                            properties:
+                              asNumber:
+                                description: |-
+                                  AsNumber sets a value into the body as a JSON number, for example the string "4000" of a
+                                  parameter as 4000, for an API that wants a number. A number passes as it is, and a string
+                                  must hold one; anything else is refused. Without it the value keeps its JSON type.
+                                type: boolean
+                              asString:
+                                description: |-
+                                  AsString sets a number or a boolean into the body as its text, for example 3619 as "3619",
+                                  for an API that wants a string. Without it the value keeps its JSON type. A string is set
+                                  as it is, and any other value (an object, an array, null) is refused.
+                                type: boolean
+                              configMapKeyRef:
+                                description: |-
+                                  ConfigMapKeyRef reads a string from a ConfigMap in the Workflow's namespace when the
+                                  step starts.
+                                properties:
+                                  key:
+                                    maxLength: 253
+                                    minLength: 1
+                                    type: string
+                                  name:
+                                    maxLength: 253
+                                    minLength: 1
+                                    type: string
+                                required:
+                                - key
+                                - name
+                                type: object
+                              output:
+                                description: Output is the name of the output declared
+                                  by that step.
+                                maxLength: 63
+                                pattern: ^[a-zA-Z][a-zA-Z0-9_-]*$
+                                type: string
+                              parameter:
+                                description: Parameter is the name of a parameter
+                                  declared in the Workflow's spec.parameters.
+                                maxLength: 63
+                                pattern: ^[a-zA-Z][a-zA-Z0-9_-]*$
+                                type: string
+                              step:
+                                description: |-
+                                  Step is the name of the step that publishes the output. It must come before the
+                                  current step (a poll may also use outputs of its own step's initial request).
+                                maxLength: 40
+                                pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                                type: string
+                              to:
+                                description: To is a non-root JSON Pointer into the
+                                  target object, for example /vdcId.
+                                maxLength: 512
+                                pattern: ^/.+$
+                                type: string
+                              toPath:
+                                description: |-
+                                  ToPath is the name of a {placeholder} in the path of the endpoint, for example env_id
+                                  for /envs/{env_id}/segments. The value is escaped as a path segment and must be a
+                                  string, number or boolean. The endpoint must contain the placeholder. Only API steps
+                                  support it.
+                                maxLength: 63
+                                pattern: ^[A-Za-z0-9_.-]+$
+                                type: string
+                              toQuery:
+                                description: |-
+                                  ToQuery is the name of a query parameter of the endpoint to set, for example
+                                  block_id. It replaces a parameter of the same name in the template's endpoint, and
+                                  the value must be a string, number or boolean. Only API steps support it.
+                                maxLength: 63
+                                pattern: ^[A-Za-z0-9_.-]+$
+                                type: string
+                            type: object
+                            x-kubernetes-validations:
+                            - message: exactly one of to, toQuery or toPath must be
+                                set
+                              rule: '(has(self.to) ? 1 : 0) + (has(self.toQuery) ?
+                                1 : 0) + (has(self.toPath) ? 1 : 0) == 1'
+                            - message: asString only applies to an input set into
+                                the body with to
+                              rule: '!has(self.asString) || has(self.to)'
+                            - message: asNumber only applies to an input set into
+                                the body with to
+                              rule: '!has(self.asNumber) || has(self.to)'
+                            - message: asString and asNumber cannot be used together
+                              rule: '!has(self.asString) || !has(self.asNumber)'
+                            - message: step and output must be set together
+                              rule: has(self.step) == has(self.output)
+                            - message: exactly one of step and output, parameter,
+                                or configMapKeyRef must be set
+                              rule: '(has(self.output) ? 1 : 0) + (has(self.parameter)
+                                ? 1 : 0) + (has(self.configMapKeyRef) ? 1 : 0) ==
+                                1'
+                          maxItems: 32
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        outputs:
+                          description: |-
+                            Outputs publish values from this request's response, by name, for later steps.
+                            With a poll, they are read from the initial response; add poll.outputs to
+                            publish values from the final poll response.
+                          items:
+                            description: |-
+                              WorkflowOutput publishes one named value from a JSON response so that later steps
+                              can use it, instead of depending on the shape of the previous response.
+                            properties:
+                              debugJSON:
+                                description: |-
+                                  DebugJSON is the value published when the step runs in debug mode, where nothing is
+                                  sent and there is no response to read. It is never used for a real response, so a
+                                  missing field cannot silently turn into it. Without it, a debug step publishes nothing.
+                                maxLength: 1024
+                                type: string
+                              defaultJSON:
+                                description: |-
+                                  DefaultJSON is the JSON value used when From does not exist in the response, or
+                                  when select matches no element (for example "eu-1", 3 or null). Without it, a
+                                  missing value fails the workflow.
+                                maxLength: 1024
+                                type: string
+                              from:
+                                description: |-
+                                  From is a JSON Pointer into the response, for example /id. With select it is
+                                  relative to the selected array element, and empty publishes the whole element. A
+                                  template output has no from.
+                                maxLength: 512
+                                pattern: ^(/.*)?$
+                                type: string
+                              name:
+                                description: Name identifies the output within its
+                                  step.
+                                maxLength: 63
+                                pattern: ^[a-zA-Z][a-zA-Z0-9_-]*$
+                                type: string
+                              select:
+                                description: |-
+                                  Select picks one element of an array in the response, so that From does not depend
+                                  on its position.
+                                properties:
+                                  array:
+                                    description: |-
+                                      Array is a JSON Pointer to the array in the response. Empty means that the response
+                                      itself is the array.
+                                    maxLength: 512
+                                    pattern: ^(/.*)?$
+                                    type: string
+                                  where:
+                                    description: |-
+                                      Where lists the conditions an element must all satisfy. The first element in
+                                      array order that does is selected.
+                                    items:
+                                      description: WorkflowCondition compares one
+                                        field of an array element with an expected
+                                        value.
+                                      properties:
+                                        equalsFrom:
+                                          description: |-
+                                            EqualsFrom reads the expected value, a string, from a ConfigMap in the Workflow's
+                                            namespace when the step's output is read.
+                                          properties:
+                                            key:
+                                              maxLength: 253
+                                              minLength: 1
+                                              type: string
+                                            name:
+                                              maxLength: 253
+                                              minLength: 1
+                                              type: string
+                                          required:
+                                          - key
+                                          - name
+                                          type: object
+                                        equalsJSON:
+                                          description: EqualsJSON is the expected
+                                            value as JSON (for example true, "ready"
+                                            or 3).
+                                          maxLength: 1024
+                                          type: string
+                                        equalsOutput:
+                                          description: |-
+                                            EqualsOutput compares with an output published by an earlier step. The comparison is
+                                            exact, on the whole value: it is never a substring match.
+                                          properties:
+                                            output:
+                                              maxLength: 63
+                                              pattern: ^[a-zA-Z][a-zA-Z0-9_-]*$
+                                              type: string
+                                            step:
+                                              maxLength: 40
+                                              pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                                              type: string
+                                          required:
+                                          - output
+                                          - step
+                                          type: object
+                                        equalsParameter:
+                                          description: |-
+                                            EqualsParameter compares with a parameter of the Workflow's spec.parameters. The
+                                            comparison is exact, on the whole value.
+                                          maxLength: 63
+                                          pattern: ^[a-zA-Z][a-zA-Z0-9_-]*$
+                                          type: string
+                                        field:
+                                          description: Field is a JSON Pointer relative
+                                            to the array element, for example /name.
+                                          maxLength: 512
+                                          pattern: ^/.+$
+                                          type: string
+                                      required:
+                                      - field
+                                      type: object
+                                      x-kubernetes-validations:
+                                      - message: exactly one of equalsJSON, equalsFrom,
+                                          equalsOutput or equalsParameter must be
+                                          set
+                                        rule: '(has(self.equalsJSON) ? 1 : 0) + (has(self.equalsFrom)
+                                          ? 1 : 0) + (has(self.equalsOutput) ? 1 :
+                                          0) + (has(self.equalsParameter) ? 1 : 0)
+                                          == 1'
+                                    maxItems: 8
+                                    minItems: 1
+                                    type: array
+                                    x-kubernetes-list-type: atomic
+                                required:
+                                - where
+                                type: object
+                              sensitive:
+                                description: Sensitive stores the value in a per-workflow
+                                  Secret instead of the Workflow status.
+                                type: boolean
+                              template:
+                                description: |-
+                                  Template builds the value as a string from the response-independent values it names,
+                                  instead of reading the response: {{parameters.<name>}}, {{steps.<step>.outputs.<name>}}
+                                  for an earlier step, and {{outputs.<name>}} for a template output declared above it in
+                                  the same step. For example "P2P-{{parameters.clientName}}{{parameters.segmentSuffix}}".
+                                  Values must be strings, numbers or booleans. The output is published when the step
+                                  completes, and in debug mode too.
+                                maxLength: 1024
+                                type: string
+                            required:
+                            - name
+                            type: object
+                            x-kubernetes-validations:
+                            - message: a template output has no from or select; any
+                                other needs from, which may be empty only together
+                                with select
+                              rule: 'has(self.template) ? (!has(self.select) && (!has(self.from)
+                                || size(self.from) == 0)) : ((has(self.from) && size(self.from)
+                                > 0) || has(self.select))'
+                          maxItems: 32
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        poll:
+                          description: Poll repeats a read request until the JSON
+                            response satisfies the condition.
+                          properties:
+                            conditionJSONPointer:
+                              description: JSON Pointer into the polling response.
+                              pattern: ^/.*$
+                              type: string
+                            equalsJSON:
+                              description: Expected value as JSON (for example true,
+                                "ready", or 3).
+                              maxLength: 1024
+                              type: string
+                            inputs:
+                              description: |-
+                                Inputs set published values into each poll request body. They may use outputs
+                                of earlier steps and of this step's initial request. They need a templateRef.
+                              items:
+                                description: |-
+                                  WorkflowInput sets a value into the request of a step: into a JSON object body (To) or
+                                  into the query string of the endpoint (ToQuery) or into its path (ToPath). The value comes from exactly one source:
+                                  an output of an earlier step (Step and Output), a Workflow parameter (Parameter), or a
+                                  key of a ConfigMap (ConfigMapKeyRef).
+                                properties:
+                                  asNumber:
+                                    description: |-
+                                      AsNumber sets a value into the body as a JSON number, for example the string "4000" of a
+                                      parameter as 4000, for an API that wants a number. A number passes as it is, and a string
+                                      must hold one; anything else is refused. Without it the value keeps its JSON type.
+                                    type: boolean
+                                  asString:
+                                    description: |-
+                                      AsString sets a number or a boolean into the body as its text, for example 3619 as "3619",
+                                      for an API that wants a string. Without it the value keeps its JSON type. A string is set
+                                      as it is, and any other value (an object, an array, null) is refused.
+                                    type: boolean
+                                  configMapKeyRef:
+                                    description: |-
+                                      ConfigMapKeyRef reads a string from a ConfigMap in the Workflow's namespace when the
+                                      step starts.
+                                    properties:
+                                      key:
+                                        maxLength: 253
+                                        minLength: 1
+                                        type: string
+                                      name:
+                                        maxLength: 253
+                                        minLength: 1
+                                        type: string
+                                    required:
+                                    - key
+                                    - name
+                                    type: object
+                                  output:
+                                    description: Output is the name of the output
+                                      declared by that step.
+                                    maxLength: 63
+                                    pattern: ^[a-zA-Z][a-zA-Z0-9_-]*$
+                                    type: string
+                                  parameter:
+                                    description: Parameter is the name of a parameter
+                                      declared in the Workflow's spec.parameters.
+                                    maxLength: 63
+                                    pattern: ^[a-zA-Z][a-zA-Z0-9_-]*$
+                                    type: string
+                                  step:
+                                    description: |-
+                                      Step is the name of the step that publishes the output. It must come before the
+                                      current step (a poll may also use outputs of its own step's initial request).
+                                    maxLength: 40
+                                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                                    type: string
+                                  to:
+                                    description: To is a non-root JSON Pointer into
+                                      the target object, for example /vdcId.
+                                    maxLength: 512
+                                    pattern: ^/.+$
+                                    type: string
+                                  toPath:
+                                    description: |-
+                                      ToPath is the name of a {placeholder} in the path of the endpoint, for example env_id
+                                      for /envs/{env_id}/segments. The value is escaped as a path segment and must be a
+                                      string, number or boolean. The endpoint must contain the placeholder. Only API steps
+                                      support it.
+                                    maxLength: 63
+                                    pattern: ^[A-Za-z0-9_.-]+$
+                                    type: string
+                                  toQuery:
+                                    description: |-
+                                      ToQuery is the name of a query parameter of the endpoint to set, for example
+                                      block_id. It replaces a parameter of the same name in the template's endpoint, and
+                                      the value must be a string, number or boolean. Only API steps support it.
+                                    maxLength: 63
+                                    pattern: ^[A-Za-z0-9_.-]+$
+                                    type: string
+                                type: object
+                                x-kubernetes-validations:
+                                - message: exactly one of to, toQuery or toPath must
+                                    be set
+                                  rule: '(has(self.to) ? 1 : 0) + (has(self.toQuery)
+                                    ? 1 : 0) + (has(self.toPath) ? 1 : 0) == 1'
+                                - message: asString only applies to an input set into
+                                    the body with to
+                                  rule: '!has(self.asString) || has(self.to)'
+                                - message: asNumber only applies to an input set into
+                                    the body with to
+                                  rule: '!has(self.asNumber) || has(self.to)'
+                                - message: asString and asNumber cannot be used together
+                                  rule: '!has(self.asString) || !has(self.asNumber)'
+                                - message: step and output must be set together
+                                  rule: has(self.step) == has(self.output)
+                                - message: exactly one of step and output, parameter,
+                                    or configMapKeyRef must be set
+                                  rule: '(has(self.output) ? 1 : 0) + (has(self.parameter)
+                                    ? 1 : 0) + (has(self.configMapKeyRef) ? 1 : 0)
+                                    == 1'
+                              maxItems: 32
+                              type: array
+                              x-kubernetes-list-type: atomic
+                            intervalSeconds:
+                              default: 5
+                              format: int32
+                              maximum: 3600
+                              minimum: 1
+                              type: integer
+                            maxAttempts:
+                              default: 20
+                              format: int32
+                              maximum: 100
+                              minimum: 1
+                              type: integer
+                            outputs:
+                              description: |-
+                                Outputs publish values from the final poll response, the one that satisfies
+                                the condition. Names must differ from the step's own outputs.
+                              items:
+                                description: |-
+                                  WorkflowOutput publishes one named value from a JSON response so that later steps
+                                  can use it, instead of depending on the shape of the previous response.
+                                properties:
+                                  debugJSON:
+                                    description: |-
+                                      DebugJSON is the value published when the step runs in debug mode, where nothing is
+                                      sent and there is no response to read. It is never used for a real response, so a
+                                      missing field cannot silently turn into it. Without it, a debug step publishes nothing.
+                                    maxLength: 1024
+                                    type: string
+                                  defaultJSON:
+                                    description: |-
+                                      DefaultJSON is the JSON value used when From does not exist in the response, or
+                                      when select matches no element (for example "eu-1", 3 or null). Without it, a
+                                      missing value fails the workflow.
+                                    maxLength: 1024
+                                    type: string
+                                  from:
+                                    description: |-
+                                      From is a JSON Pointer into the response, for example /id. With select it is
+                                      relative to the selected array element, and empty publishes the whole element. A
+                                      template output has no from.
+                                    maxLength: 512
+                                    pattern: ^(/.*)?$
+                                    type: string
+                                  name:
+                                    description: Name identifies the output within
+                                      its step.
+                                    maxLength: 63
+                                    pattern: ^[a-zA-Z][a-zA-Z0-9_-]*$
+                                    type: string
+                                  select:
+                                    description: |-
+                                      Select picks one element of an array in the response, so that From does not depend
+                                      on its position.
+                                    properties:
+                                      array:
+                                        description: |-
+                                          Array is a JSON Pointer to the array in the response. Empty means that the response
+                                          itself is the array.
+                                        maxLength: 512
+                                        pattern: ^(/.*)?$
+                                        type: string
+                                      where:
+                                        description: |-
+                                          Where lists the conditions an element must all satisfy. The first element in
+                                          array order that does is selected.
+                                        items:
+                                          description: WorkflowCondition compares
+                                            one field of an array element with an
+                                            expected value.
+                                          properties:
+                                            equalsFrom:
+                                              description: |-
+                                                EqualsFrom reads the expected value, a string, from a ConfigMap in the Workflow's
+                                                namespace when the step's output is read.
+                                              properties:
+                                                key:
+                                                  maxLength: 253
+                                                  minLength: 1
+                                                  type: string
+                                                name:
+                                                  maxLength: 253
+                                                  minLength: 1
+                                                  type: string
+                                              required:
+                                              - key
+                                              - name
+                                              type: object
+                                            equalsJSON:
+                                              description: EqualsJSON is the expected
+                                                value as JSON (for example true, "ready"
+                                                or 3).
+                                              maxLength: 1024
+                                              type: string
+                                            equalsOutput:
+                                              description: |-
+                                                EqualsOutput compares with an output published by an earlier step. The comparison is
+                                                exact, on the whole value: it is never a substring match.
+                                              properties:
+                                                output:
+                                                  maxLength: 63
+                                                  pattern: ^[a-zA-Z][a-zA-Z0-9_-]*$
+                                                  type: string
+                                                step:
+                                                  maxLength: 40
+                                                  pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                                                  type: string
+                                              required:
+                                              - output
+                                              - step
+                                              type: object
+                                            equalsParameter:
+                                              description: |-
+                                                EqualsParameter compares with a parameter of the Workflow's spec.parameters. The
+                                                comparison is exact, on the whole value.
+                                              maxLength: 63
+                                              pattern: ^[a-zA-Z][a-zA-Z0-9_-]*$
+                                              type: string
+                                            field:
+                                              description: Field is a JSON Pointer
+                                                relative to the array element, for
+                                                example /name.
+                                              maxLength: 512
+                                              pattern: ^/.+$
+                                              type: string
+                                          required:
+                                          - field
+                                          type: object
+                                          x-kubernetes-validations:
+                                          - message: exactly one of equalsJSON, equalsFrom,
+                                              equalsOutput or equalsParameter must
+                                              be set
+                                            rule: '(has(self.equalsJSON) ? 1 : 0)
+                                              + (has(self.equalsFrom) ? 1 : 0) + (has(self.equalsOutput)
+                                              ? 1 : 0) + (has(self.equalsParameter)
+                                              ? 1 : 0) == 1'
+                                        maxItems: 8
+                                        minItems: 1
+                                        type: array
+                                        x-kubernetes-list-type: atomic
+                                    required:
+                                    - where
+                                    type: object
+                                  sensitive:
+                                    description: Sensitive stores the value in a per-workflow
+                                      Secret instead of the Workflow status.
+                                    type: boolean
+                                  template:
+                                    description: |-
+                                      Template builds the value as a string from the response-independent values it names,
+                                      instead of reading the response: {{parameters.<name>}}, {{steps.<step>.outputs.<name>}}
+                                      for an earlier step, and {{outputs.<name>}} for a template output declared above it in
+                                      the same step. For example "P2P-{{parameters.clientName}}{{parameters.segmentSuffix}}".
+                                      Values must be strings, numbers or booleans. The output is published when the step
+                                      completes, and in debug mode too.
+                                    maxLength: 1024
+                                    type: string
+                                required:
+                                - name
+                                type: object
+                                x-kubernetes-validations:
+                                - message: a template output has no from or select;
+                                    any other needs from, which may be empty only
+                                    together with select
+                                  rule: 'has(self.template) ? (!has(self.select) &&
+                                    (!has(self.from) || size(self.from) == 0)) : ((has(self.from)
+                                    && size(self.from) > 0) || has(self.select))'
+                              maxItems: 32
+                              type: array
+                              x-kubernetes-list-type: atomic
+                            retryOnStatusCodes:
+                              description: |-
+                                RetryOnStatusCodes lists HTTP statuses of a poll response (for example 404 or 503)
+                                that mean "not ready yet" instead of a failure. Such a poll consumes one of
+                                maxAttempts. Any other non-2xx status fails the workflow. It never applies to
+                                the step's initial request.
+                              items:
+                                format: int32
+                                maximum: 599
+                                minimum: 100
+                                type: integer
+                              maxItems: 16
+                              type: array
+                              x-kubernetes-list-type: set
+                            retryOnTransportErrors:
+                              description: |-
+                                RetryOnTransportErrors treats a poll that timed out or failed at the network
+                                level as "not ready yet". Invalid requests and oversized responses still fail.
+                              type: boolean
+                            templateRef:
+                              description: |-
+                                TemplateRef names the ApiCallTemplate used for each polling request, which creates an
+                                ApiCall for every poll. Leave it out when the poll just sends the step's own request
+                                again: then the step's ApiCall repeats it by itself, as one object, up to maxAttempts
+                                requests in all (the first included), and only a GET can be repeated that way. Without
+                                templateRef, inputs must be empty, and outputs are read from the final response.
+                              properties:
+                                name:
+                                  maxLength: 253
+                                  minLength: 1
+                                  type: string
+                              required:
+                              - name
+                              type: object
+                          required:
+                          - conditionJSONPointer
+                          type: object
+                        retry:
+                          description: |-
+                            Retry sends the step's request again, from inside its ApiCall (one object, with
+                            status.attempts), when it fails with a retryable error. Only GET requests can be
+                            retried, because repeating any other method could do the same operation twice; a step
+                            that sets retry on a template with another method fails before sending anything. It
+                            cannot be combined with a poll that has no templateRef, which has its own tolerance.
+                          properties:
+                            backoffSeconds:
+                              default: 5
+                              description: BackoffSeconds is the wait between a failure
+                                and the next request.
+                              format: int32
+                              maximum: 3600
+                              minimum: 1
+                              type: integer
+                            maxAttempts:
+                              default: 3
+                              description: MaxAttempts is the total number of requests,
+                                the first one included.
+                              format: int32
+                              maximum: 10
+                              minimum: 2
+                              type: integer
+                            onTransportErrors:
+                              default: true
+                              description: |-
+                                OnTransportErrors also retries a request that timed out or failed at the network
+                                level. Invalid requests and oversized responses are never retried.
+                              type: boolean
+                            statusCodes:
+                              default:
+                              - 429
+                              - 502
+                              - 503
+                              - 504
+                              description: |-
+                                StatusCodes lists the HTTP statuses of the response that are worth another try.
+                                Any other non-2xx status fails the workflow at once.
+                              items:
+                                format: int32
+                                maximum: 599
+                                minimum: 100
+                                type: integer
+                              maxItems: 16
+                              type: array
+                              x-kubernetes-list-type: set
+                          type: object
+                        templateRef:
+                          description: |-
+                            TemplateRef names the ApiCallTemplate that defines this step's request.
+                            The Workflow runs a child ApiCall created from it, owned by the Workflow.
+                          properties:
+                            name:
+                              maxLength: 253
+                              minLength: 1
+                              type: string
+                          required:
+                          - name
+                          type: object
+                      required:
+                      - templateRef
+                      type: object
+                    name:
+                      maxLength: 40
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                      type: string
+                    terraform:
+                      description: |-
+                        WorkflowTerraformStep provisions infrastructure with terraform-engine. Its state is kept
+                        in S3-compatible storage under State.Key, independently of the workflow: any later
+                        workflow that uses the same key works on the same state and so on the same resources.
+                        Every Terraform step works in its own folder of the workflow's workspace, named after
+                        the step, so a workflow can have any number of them.
+                      properties:
+                        envFromSecrets:
+                          description: |-
+                            Secret names in the workflow namespace whose keys are exposed as environment variables to the Terraform Job.
+                            The storage credentials (AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY) must come from one of them.
+                          items:
+                            type: string
+                          maxItems: 8
+                          type: array
+                        inputs:
+                          description: |-
+                            Inputs set values published by earlier steps into terraform.auto.tfvars.json;
+                            To is a JSON pointer such as /cluster_id naming the Terraform variable.
+                          items:
+                            description: |-
+                              WorkflowInput sets a value into the request of a step: into a JSON object body (To) or
+                              into the query string of the endpoint (ToQuery) or into its path (ToPath). The value comes from exactly one source:
+                              an output of an earlier step (Step and Output), a Workflow parameter (Parameter), or a
+                              key of a ConfigMap (ConfigMapKeyRef).
+                            properties:
+                              asNumber:
+                                description: |-
+                                  AsNumber sets a value into the body as a JSON number, for example the string "4000" of a
+                                  parameter as 4000, for an API that wants a number. A number passes as it is, and a string
+                                  must hold one; anything else is refused. Without it the value keeps its JSON type.
+                                type: boolean
+                              asString:
+                                description: |-
+                                  AsString sets a number or a boolean into the body as its text, for example 3619 as "3619",
+                                  for an API that wants a string. Without it the value keeps its JSON type. A string is set
+                                  as it is, and any other value (an object, an array, null) is refused.
+                                type: boolean
+                              configMapKeyRef:
+                                description: |-
+                                  ConfigMapKeyRef reads a string from a ConfigMap in the Workflow's namespace when the
+                                  step starts.
+                                properties:
+                                  key:
+                                    maxLength: 253
+                                    minLength: 1
+                                    type: string
+                                  name:
+                                    maxLength: 253
+                                    minLength: 1
+                                    type: string
+                                required:
+                                - key
+                                - name
+                                type: object
+                              output:
+                                description: Output is the name of the output declared
+                                  by that step.
+                                maxLength: 63
+                                pattern: ^[a-zA-Z][a-zA-Z0-9_-]*$
+                                type: string
+                              parameter:
+                                description: Parameter is the name of a parameter
+                                  declared in the Workflow's spec.parameters.
+                                maxLength: 63
+                                pattern: ^[a-zA-Z][a-zA-Z0-9_-]*$
+                                type: string
+                              step:
+                                description: |-
+                                  Step is the name of the step that publishes the output. It must come before the
+                                  current step (a poll may also use outputs of its own step's initial request).
+                                maxLength: 40
+                                pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                                type: string
+                              to:
+                                description: To is a non-root JSON Pointer into the
+                                  target object, for example /vdcId.
+                                maxLength: 512
+                                pattern: ^/.+$
+                                type: string
+                              toPath:
+                                description: |-
+                                  ToPath is the name of a {placeholder} in the path of the endpoint, for example env_id
+                                  for /envs/{env_id}/segments. The value is escaped as a path segment and must be a
+                                  string, number or boolean. The endpoint must contain the placeholder. Only API steps
+                                  support it.
+                                maxLength: 63
+                                pattern: ^[A-Za-z0-9_.-]+$
+                                type: string
+                              toQuery:
+                                description: |-
+                                  ToQuery is the name of a query parameter of the endpoint to set, for example
+                                  block_id. It replaces a parameter of the same name in the template's endpoint, and
+                                  the value must be a string, number or boolean. Only API steps support it.
+                                maxLength: 63
+                                pattern: ^[A-Za-z0-9_.-]+$
+                                type: string
+                            type: object
+                            x-kubernetes-validations:
+                            - message: exactly one of to, toQuery or toPath must be
+                                set
+                              rule: '(has(self.to) ? 1 : 0) + (has(self.toQuery) ?
+                                1 : 0) + (has(self.toPath) ? 1 : 0) == 1'
+                            - message: asString only applies to an input set into
+                                the body with to
+                              rule: '!has(self.asString) || has(self.to)'
+                            - message: asNumber only applies to an input set into
+                                the body with to
+                              rule: '!has(self.asNumber) || has(self.to)'
+                            - message: asString and asNumber cannot be used together
+                              rule: '!has(self.asString) || !has(self.asNumber)'
+                            - message: step and output must be set together
+                              rule: has(self.step) == has(self.output)
+                            - message: exactly one of step and output, parameter,
+                                or configMapKeyRef must be set
+                              rule: '(has(self.output) ? 1 : 0) + (has(self.parameter)
+                                ? 1 : 0) + (has(self.configMapKeyRef) ? 1 : 0) ==
+                                1'
+                          maxItems: 32
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        outputs:
+                          description: |-
+                            Outputs publish values from the Terraform outputs (the "output" blocks of the
+                            template) for later steps. They are read from the state once the Job succeeds,
+                            as one JSON object {"<output name>": value}, so From is a JSON Pointer such as
+                            /vpc_id or /ips/0. Terraform outputs marked sensitive are always kept in the Secret.
+                          items:
+                            description: |-
+                              WorkflowOutput publishes one named value from a JSON response so that later steps
+                              can use it, instead of depending on the shape of the previous response.
+                            properties:
+                              debugJSON:
+                                description: |-
+                                  DebugJSON is the value published when the step runs in debug mode, where nothing is
+                                  sent and there is no response to read. It is never used for a real response, so a
+                                  missing field cannot silently turn into it. Without it, a debug step publishes nothing.
+                                maxLength: 1024
+                                type: string
+                              defaultJSON:
+                                description: |-
+                                  DefaultJSON is the JSON value used when From does not exist in the response, or
+                                  when select matches no element (for example "eu-1", 3 or null). Without it, a
+                                  missing value fails the workflow.
+                                maxLength: 1024
+                                type: string
+                              from:
+                                description: |-
+                                  From is a JSON Pointer into the response, for example /id. With select it is
+                                  relative to the selected array element, and empty publishes the whole element. A
+                                  template output has no from.
+                                maxLength: 512
+                                pattern: ^(/.*)?$
+                                type: string
+                              name:
+                                description: Name identifies the output within its
+                                  step.
+                                maxLength: 63
+                                pattern: ^[a-zA-Z][a-zA-Z0-9_-]*$
+                                type: string
+                              select:
+                                description: |-
+                                  Select picks one element of an array in the response, so that From does not depend
+                                  on its position.
+                                properties:
+                                  array:
+                                    description: |-
+                                      Array is a JSON Pointer to the array in the response. Empty means that the response
+                                      itself is the array.
+                                    maxLength: 512
+                                    pattern: ^(/.*)?$
+                                    type: string
+                                  where:
+                                    description: |-
+                                      Where lists the conditions an element must all satisfy. The first element in
+                                      array order that does is selected.
+                                    items:
+                                      description: WorkflowCondition compares one
+                                        field of an array element with an expected
+                                        value.
+                                      properties:
+                                        equalsFrom:
+                                          description: |-
+                                            EqualsFrom reads the expected value, a string, from a ConfigMap in the Workflow's
+                                            namespace when the step's output is read.
+                                          properties:
+                                            key:
+                                              maxLength: 253
+                                              minLength: 1
+                                              type: string
+                                            name:
+                                              maxLength: 253
+                                              minLength: 1
+                                              type: string
+                                          required:
+                                          - key
+                                          - name
+                                          type: object
+                                        equalsJSON:
+                                          description: EqualsJSON is the expected
+                                            value as JSON (for example true, "ready"
+                                            or 3).
+                                          maxLength: 1024
+                                          type: string
+                                        equalsOutput:
+                                          description: |-
+                                            EqualsOutput compares with an output published by an earlier step. The comparison is
+                                            exact, on the whole value: it is never a substring match.
+                                          properties:
+                                            output:
+                                              maxLength: 63
+                                              pattern: ^[a-zA-Z][a-zA-Z0-9_-]*$
+                                              type: string
+                                            step:
+                                              maxLength: 40
+                                              pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                                              type: string
+                                          required:
+                                          - output
+                                          - step
+                                          type: object
+                                        equalsParameter:
+                                          description: |-
+                                            EqualsParameter compares with a parameter of the Workflow's spec.parameters. The
+                                            comparison is exact, on the whole value.
+                                          maxLength: 63
+                                          pattern: ^[a-zA-Z][a-zA-Z0-9_-]*$
+                                          type: string
+                                        field:
+                                          description: Field is a JSON Pointer relative
+                                            to the array element, for example /name.
+                                          maxLength: 512
+                                          pattern: ^/.+$
+                                          type: string
+                                      required:
+                                      - field
+                                      type: object
+                                      x-kubernetes-validations:
+                                      - message: exactly one of equalsJSON, equalsFrom,
+                                          equalsOutput or equalsParameter must be
+                                          set
+                                        rule: '(has(self.equalsJSON) ? 1 : 0) + (has(self.equalsFrom)
+                                          ? 1 : 0) + (has(self.equalsOutput) ? 1 :
+                                          0) + (has(self.equalsParameter) ? 1 : 0)
+                                          == 1'
+                                    maxItems: 8
+                                    minItems: 1
+                                    type: array
+                                    x-kubernetes-list-type: atomic
+                                required:
+                                - where
+                                type: object
+                              sensitive:
+                                description: Sensitive stores the value in a per-workflow
+                                  Secret instead of the Workflow status.
+                                type: boolean
+                              template:
+                                description: |-
+                                  Template builds the value as a string from the response-independent values it names,
+                                  instead of reading the response: {{parameters.<name>}}, {{steps.<step>.outputs.<name>}}
+                                  for an earlier step, and {{outputs.<name>}} for a template output declared above it in
+                                  the same step. For example "P2P-{{parameters.clientName}}{{parameters.segmentSuffix}}".
+                                  Values must be strings, numbers or booleans. The output is published when the step
+                                  completes, and in debug mode too.
+                                maxLength: 1024
+                                type: string
+                            required:
+                            - name
+                            type: object
+                            x-kubernetes-validations:
+                            - message: a template output has no from or select; any
+                                other needs from, which may be empty only together
+                                with select
+                              rule: 'has(self.template) ? (!has(self.select) && (!has(self.from)
+                                || size(self.from) == 0)) : ((has(self.from) && size(self.from)
+                                > 0) || has(self.select))'
+                          maxItems: 32
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        state:
+                          description: State says where the Terraform state of this
+                            step lives.
+                          properties:
+                            key:
+                              description: |-
+                                Key names the resource this step manages, for example "vdc/acme/network". Workflows
+                                that use the same key in the same namespace share one state, even at different times,
+                                so a later run with changed inputs modifies the existing resources. Concurrent runs on
+                                the same key do not overlap: the second one fails on the state lock.
+
+                                Segments are separated by "/" and use letters, digits, ".", "_" and "-". A segment can
+                                contain placeholders {{steps.<step>.outputs.<name>}} that are replaced by the output of
+                                an earlier step, which must be a string, number or boolean made of the same characters.
+                              maxLength: 512
+                              minLength: 1
+                              pattern: ^[A-Za-z0-9._{}/ -]+$
+                              type: string
+                          required:
+                          - key
+                          type: object
+                        templateRef:
+                          description: |-
+                            TemplateRef names the TerraformTemplate whose files this step runs. Its files are
+                            copied when the step starts; later edits of the template do not affect it.
+                          properties:
+                            name:
+                              maxLength: 253
+                              minLength: 1
+                              type: string
+                          required:
+                          - name
+                          type: object
+                        timeoutSeconds:
+                          default: 1800
+                          description: Maximum wall time for the Terraform Job.
+                          format: int32
+                          maximum: 7200
+                          minimum: 1
+                          type: integer
+                      required:
+                      - state
+                      - templateRef
+                      type: object
+                  required:
+                  - name
+                  type: object
+                  x-kubernetes-validations:
+                  - message: exactly one of api or terraform must be set
+                    rule: has(self.api) != has(self.terraform)
+                maxItems: 20
+                type: array
+                x-kubernetes-list-type: atomic
+              parameters:
+                description: |-
+                  Parameters are the values a Workflow gives when it runs the template, such as a client
+                  name. A step reads one with an input that sets "parameter", or with a template output.
+                  A parameter without a default must be given by the Workflow.
+                items:
+                  description: WorkflowTemplateParameter declares a parameter of a
+                    WorkflowTemplate.
+                  properties:
+                    default:
+                      description: |-
+                        Default is used when the Workflow gives no value. Without it the parameter is
+                        required.
+                      maxLength: 1024
+                      type: string
+                    description:
+                      description: Description says what the parameter is for.
+                      maxLength: 256
+                      type: string
+                    name:
+                      maxLength: 63
+                      pattern: ^[a-zA-Z][a-zA-Z0-9_-]*$
+                      type: string
+                  required:
+                  - name
+                  type: object
+                maxItems: 32
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+              steps:
+                description: |-
+                  Steps run strictly in order, when the Workflow reaches the template. A step starts only
+                  after its predecessor succeeds.
+                items:
+                  description: WorkflowStep is exactly one API or Terraform operation.
+                  properties:
+                    api:
+                      description: |-
+                        WorkflowAPIStep runs an ApiCall created from an existing ApiCallTemplate and
+                        may poll until ready.
+                      properties:
+                        debug:
+                          description: |-
+                            Debug makes the step validate and log its request without sending it, like debug on the
+                            ApiCallTemplate: either one is enough. The step completes with no response, so it
+                            publishes only the outputs that need none (see WorkflowOutput.Template and DebugJSON).
+                            The requests of a poll are not affected.
+                          type: boolean
+                        expect:
+                          description: |-
+                            Expect lists conditions on the response of the initial request. If one does not hold,
+                            the workflow fails, and the request is not retried. They are checked before the outputs
+                            are published, and not on the responses of a poll.
+                          items:
+                            description: WorkflowExpectation requires a field of a
+                              JSON response to have a given value.
+                            properties:
+                              equalsJSON:
+                                description: EqualsJSON is the expected value as JSON
+                                  (for example true, "ready" or 3).
+                                maxLength: 1024
+                                type: string
+                              message:
+                                description: |-
+                                  Message explains a failure in the workflow status. The response itself is never copied
+                                  there.
+                                maxLength: 256
+                                type: string
+                              pointer:
+                                description: Pointer is a JSON Pointer into the response,
+                                  for example /ok.
+                                maxLength: 512
+                                pattern: ^/.*$
+                                type: string
+                            required:
+                            - equalsJSON
+                            - pointer
+                            type: object
+                          maxItems: 8
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        inputs:
+                          description: |-
+                            Inputs set values published by earlier steps (see Outputs) into the copied body.
+                            The body must be a JSON object.
+                          items:
+                            description: |-
+                              WorkflowInput sets a value into the request of a step: into a JSON object body (To) or
+                              into the query string of the endpoint (ToQuery) or into its path (ToPath). The value comes from exactly one source:
+                              an output of an earlier step (Step and Output), a Workflow parameter (Parameter), or a
+                              key of a ConfigMap (ConfigMapKeyRef).
+                            properties:
+                              asNumber:
+                                description: |-
+                                  AsNumber sets a value into the body as a JSON number, for example the string "4000" of a
+                                  parameter as 4000, for an API that wants a number. A number passes as it is, and a string
+                                  must hold one; anything else is refused. Without it the value keeps its JSON type.
+                                type: boolean
+                              asString:
+                                description: |-
+                                  AsString sets a number or a boolean into the body as its text, for example 3619 as "3619",
+                                  for an API that wants a string. Without it the value keeps its JSON type. A string is set
+                                  as it is, and any other value (an object, an array, null) is refused.
+                                type: boolean
+                              configMapKeyRef:
+                                description: |-
+                                  ConfigMapKeyRef reads a string from a ConfigMap in the Workflow's namespace when the
+                                  step starts.
+                                properties:
+                                  key:
+                                    maxLength: 253
+                                    minLength: 1
+                                    type: string
+                                  name:
+                                    maxLength: 253
+                                    minLength: 1
+                                    type: string
+                                required:
+                                - key
+                                - name
+                                type: object
+                              output:
+                                description: Output is the name of the output declared
+                                  by that step.
+                                maxLength: 63
+                                pattern: ^[a-zA-Z][a-zA-Z0-9_-]*$
+                                type: string
+                              parameter:
+                                description: Parameter is the name of a parameter
+                                  declared in the Workflow's spec.parameters.
+                                maxLength: 63
+                                pattern: ^[a-zA-Z][a-zA-Z0-9_-]*$
+                                type: string
+                              step:
+                                description: |-
+                                  Step is the name of the step that publishes the output. It must come before the
+                                  current step (a poll may also use outputs of its own step's initial request).
+                                maxLength: 40
+                                pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                                type: string
+                              to:
+                                description: To is a non-root JSON Pointer into the
+                                  target object, for example /vdcId.
+                                maxLength: 512
+                                pattern: ^/.+$
+                                type: string
+                              toPath:
+                                description: |-
+                                  ToPath is the name of a {placeholder} in the path of the endpoint, for example env_id
+                                  for /envs/{env_id}/segments. The value is escaped as a path segment and must be a
+                                  string, number or boolean. The endpoint must contain the placeholder. Only API steps
+                                  support it.
+                                maxLength: 63
+                                pattern: ^[A-Za-z0-9_.-]+$
+                                type: string
+                              toQuery:
+                                description: |-
+                                  ToQuery is the name of a query parameter of the endpoint to set, for example
+                                  block_id. It replaces a parameter of the same name in the template's endpoint, and
+                                  the value must be a string, number or boolean. Only API steps support it.
+                                maxLength: 63
+                                pattern: ^[A-Za-z0-9_.-]+$
+                                type: string
+                            type: object
+                            x-kubernetes-validations:
+                            - message: exactly one of to, toQuery or toPath must be
+                                set
+                              rule: '(has(self.to) ? 1 : 0) + (has(self.toQuery) ?
+                                1 : 0) + (has(self.toPath) ? 1 : 0) == 1'
+                            - message: asString only applies to an input set into
+                                the body with to
+                              rule: '!has(self.asString) || has(self.to)'
+                            - message: asNumber only applies to an input set into
+                                the body with to
+                              rule: '!has(self.asNumber) || has(self.to)'
+                            - message: asString and asNumber cannot be used together
+                              rule: '!has(self.asString) || !has(self.asNumber)'
+                            - message: step and output must be set together
+                              rule: has(self.step) == has(self.output)
+                            - message: exactly one of step and output, parameter,
+                                or configMapKeyRef must be set
+                              rule: '(has(self.output) ? 1 : 0) + (has(self.parameter)
+                                ? 1 : 0) + (has(self.configMapKeyRef) ? 1 : 0) ==
+                                1'
+                          maxItems: 32
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        outputs:
+                          description: |-
+                            Outputs publish values from this request's response, by name, for later steps.
+                            With a poll, they are read from the initial response; add poll.outputs to
+                            publish values from the final poll response.
+                          items:
+                            description: |-
+                              WorkflowOutput publishes one named value from a JSON response so that later steps
+                              can use it, instead of depending on the shape of the previous response.
+                            properties:
+                              debugJSON:
+                                description: |-
+                                  DebugJSON is the value published when the step runs in debug mode, where nothing is
+                                  sent and there is no response to read. It is never used for a real response, so a
+                                  missing field cannot silently turn into it. Without it, a debug step publishes nothing.
+                                maxLength: 1024
+                                type: string
+                              defaultJSON:
+                                description: |-
+                                  DefaultJSON is the JSON value used when From does not exist in the response, or
+                                  when select matches no element (for example "eu-1", 3 or null). Without it, a
+                                  missing value fails the workflow.
+                                maxLength: 1024
+                                type: string
+                              from:
+                                description: |-
+                                  From is a JSON Pointer into the response, for example /id. With select it is
+                                  relative to the selected array element, and empty publishes the whole element. A
+                                  template output has no from.
+                                maxLength: 512
+                                pattern: ^(/.*)?$
+                                type: string
+                              name:
+                                description: Name identifies the output within its
+                                  step.
+                                maxLength: 63
+                                pattern: ^[a-zA-Z][a-zA-Z0-9_-]*$
+                                type: string
+                              select:
+                                description: |-
+                                  Select picks one element of an array in the response, so that From does not depend
+                                  on its position.
+                                properties:
+                                  array:
+                                    description: |-
+                                      Array is a JSON Pointer to the array in the response. Empty means that the response
+                                      itself is the array.
+                                    maxLength: 512
+                                    pattern: ^(/.*)?$
+                                    type: string
+                                  where:
+                                    description: |-
+                                      Where lists the conditions an element must all satisfy. The first element in
+                                      array order that does is selected.
+                                    items:
+                                      description: WorkflowCondition compares one
+                                        field of an array element with an expected
+                                        value.
+                                      properties:
+                                        equalsFrom:
+                                          description: |-
+                                            EqualsFrom reads the expected value, a string, from a ConfigMap in the Workflow's
+                                            namespace when the step's output is read.
+                                          properties:
+                                            key:
+                                              maxLength: 253
+                                              minLength: 1
+                                              type: string
+                                            name:
+                                              maxLength: 253
+                                              minLength: 1
+                                              type: string
+                                          required:
+                                          - key
+                                          - name
+                                          type: object
+                                        equalsJSON:
+                                          description: EqualsJSON is the expected
+                                            value as JSON (for example true, "ready"
+                                            or 3).
+                                          maxLength: 1024
+                                          type: string
+                                        equalsOutput:
+                                          description: |-
+                                            EqualsOutput compares with an output published by an earlier step. The comparison is
+                                            exact, on the whole value: it is never a substring match.
+                                          properties:
+                                            output:
+                                              maxLength: 63
+                                              pattern: ^[a-zA-Z][a-zA-Z0-9_-]*$
+                                              type: string
+                                            step:
+                                              maxLength: 40
+                                              pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                                              type: string
+                                          required:
+                                          - output
+                                          - step
+                                          type: object
+                                        equalsParameter:
+                                          description: |-
+                                            EqualsParameter compares with a parameter of the Workflow's spec.parameters. The
+                                            comparison is exact, on the whole value.
+                                          maxLength: 63
+                                          pattern: ^[a-zA-Z][a-zA-Z0-9_-]*$
+                                          type: string
+                                        field:
+                                          description: Field is a JSON Pointer relative
+                                            to the array element, for example /name.
+                                          maxLength: 512
+                                          pattern: ^/.+$
+                                          type: string
+                                      required:
+                                      - field
+                                      type: object
+                                      x-kubernetes-validations:
+                                      - message: exactly one of equalsJSON, equalsFrom,
+                                          equalsOutput or equalsParameter must be
+                                          set
+                                        rule: '(has(self.equalsJSON) ? 1 : 0) + (has(self.equalsFrom)
+                                          ? 1 : 0) + (has(self.equalsOutput) ? 1 :
+                                          0) + (has(self.equalsParameter) ? 1 : 0)
+                                          == 1'
+                                    maxItems: 8
+                                    minItems: 1
+                                    type: array
+                                    x-kubernetes-list-type: atomic
+                                required:
+                                - where
+                                type: object
+                              sensitive:
+                                description: Sensitive stores the value in a per-workflow
+                                  Secret instead of the Workflow status.
+                                type: boolean
+                              template:
+                                description: |-
+                                  Template builds the value as a string from the response-independent values it names,
+                                  instead of reading the response: {{parameters.<name>}}, {{steps.<step>.outputs.<name>}}
+                                  for an earlier step, and {{outputs.<name>}} for a template output declared above it in
+                                  the same step. For example "P2P-{{parameters.clientName}}{{parameters.segmentSuffix}}".
+                                  Values must be strings, numbers or booleans. The output is published when the step
+                                  completes, and in debug mode too.
+                                maxLength: 1024
+                                type: string
+                            required:
+                            - name
+                            type: object
+                            x-kubernetes-validations:
+                            - message: a template output has no from or select; any
+                                other needs from, which may be empty only together
+                                with select
+                              rule: 'has(self.template) ? (!has(self.select) && (!has(self.from)
+                                || size(self.from) == 0)) : ((has(self.from) && size(self.from)
+                                > 0) || has(self.select))'
+                          maxItems: 32
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        poll:
+                          description: Poll repeats a read request until the JSON
+                            response satisfies the condition.
+                          properties:
+                            conditionJSONPointer:
+                              description: JSON Pointer into the polling response.
+                              pattern: ^/.*$
+                              type: string
+                            equalsJSON:
+                              description: Expected value as JSON (for example true,
+                                "ready", or 3).
+                              maxLength: 1024
+                              type: string
+                            inputs:
+                              description: |-
+                                Inputs set published values into each poll request body. They may use outputs
+                                of earlier steps and of this step's initial request. They need a templateRef.
+                              items:
+                                description: |-
+                                  WorkflowInput sets a value into the request of a step: into a JSON object body (To) or
+                                  into the query string of the endpoint (ToQuery) or into its path (ToPath). The value comes from exactly one source:
+                                  an output of an earlier step (Step and Output), a Workflow parameter (Parameter), or a
+                                  key of a ConfigMap (ConfigMapKeyRef).
+                                properties:
+                                  asNumber:
+                                    description: |-
+                                      AsNumber sets a value into the body as a JSON number, for example the string "4000" of a
+                                      parameter as 4000, for an API that wants a number. A number passes as it is, and a string
+                                      must hold one; anything else is refused. Without it the value keeps its JSON type.
+                                    type: boolean
+                                  asString:
+                                    description: |-
+                                      AsString sets a number or a boolean into the body as its text, for example 3619 as "3619",
+                                      for an API that wants a string. Without it the value keeps its JSON type. A string is set
+                                      as it is, and any other value (an object, an array, null) is refused.
+                                    type: boolean
+                                  configMapKeyRef:
+                                    description: |-
+                                      ConfigMapKeyRef reads a string from a ConfigMap in the Workflow's namespace when the
+                                      step starts.
+                                    properties:
+                                      key:
+                                        maxLength: 253
+                                        minLength: 1
+                                        type: string
+                                      name:
+                                        maxLength: 253
+                                        minLength: 1
+                                        type: string
+                                    required:
+                                    - key
+                                    - name
+                                    type: object
+                                  output:
+                                    description: Output is the name of the output
+                                      declared by that step.
+                                    maxLength: 63
+                                    pattern: ^[a-zA-Z][a-zA-Z0-9_-]*$
+                                    type: string
+                                  parameter:
+                                    description: Parameter is the name of a parameter
+                                      declared in the Workflow's spec.parameters.
+                                    maxLength: 63
+                                    pattern: ^[a-zA-Z][a-zA-Z0-9_-]*$
+                                    type: string
+                                  step:
+                                    description: |-
+                                      Step is the name of the step that publishes the output. It must come before the
+                                      current step (a poll may also use outputs of its own step's initial request).
+                                    maxLength: 40
+                                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                                    type: string
+                                  to:
+                                    description: To is a non-root JSON Pointer into
+                                      the target object, for example /vdcId.
+                                    maxLength: 512
+                                    pattern: ^/.+$
+                                    type: string
+                                  toPath:
+                                    description: |-
+                                      ToPath is the name of a {placeholder} in the path of the endpoint, for example env_id
+                                      for /envs/{env_id}/segments. The value is escaped as a path segment and must be a
+                                      string, number or boolean. The endpoint must contain the placeholder. Only API steps
+                                      support it.
+                                    maxLength: 63
+                                    pattern: ^[A-Za-z0-9_.-]+$
+                                    type: string
+                                  toQuery:
+                                    description: |-
+                                      ToQuery is the name of a query parameter of the endpoint to set, for example
+                                      block_id. It replaces a parameter of the same name in the template's endpoint, and
+                                      the value must be a string, number or boolean. Only API steps support it.
+                                    maxLength: 63
+                                    pattern: ^[A-Za-z0-9_.-]+$
+                                    type: string
+                                type: object
+                                x-kubernetes-validations:
+                                - message: exactly one of to, toQuery or toPath must
+                                    be set
+                                  rule: '(has(self.to) ? 1 : 0) + (has(self.toQuery)
+                                    ? 1 : 0) + (has(self.toPath) ? 1 : 0) == 1'
+                                - message: asString only applies to an input set into
+                                    the body with to
+                                  rule: '!has(self.asString) || has(self.to)'
+                                - message: asNumber only applies to an input set into
+                                    the body with to
+                                  rule: '!has(self.asNumber) || has(self.to)'
+                                - message: asString and asNumber cannot be used together
+                                  rule: '!has(self.asString) || !has(self.asNumber)'
+                                - message: step and output must be set together
+                                  rule: has(self.step) == has(self.output)
+                                - message: exactly one of step and output, parameter,
+                                    or configMapKeyRef must be set
+                                  rule: '(has(self.output) ? 1 : 0) + (has(self.parameter)
+                                    ? 1 : 0) + (has(self.configMapKeyRef) ? 1 : 0)
+                                    == 1'
+                              maxItems: 32
+                              type: array
+                              x-kubernetes-list-type: atomic
+                            intervalSeconds:
+                              default: 5
+                              format: int32
+                              maximum: 3600
+                              minimum: 1
+                              type: integer
+                            maxAttempts:
+                              default: 20
+                              format: int32
+                              maximum: 100
+                              minimum: 1
+                              type: integer
+                            outputs:
+                              description: |-
+                                Outputs publish values from the final poll response, the one that satisfies
+                                the condition. Names must differ from the step's own outputs.
+                              items:
+                                description: |-
+                                  WorkflowOutput publishes one named value from a JSON response so that later steps
+                                  can use it, instead of depending on the shape of the previous response.
+                                properties:
+                                  debugJSON:
+                                    description: |-
+                                      DebugJSON is the value published when the step runs in debug mode, where nothing is
+                                      sent and there is no response to read. It is never used for a real response, so a
+                                      missing field cannot silently turn into it. Without it, a debug step publishes nothing.
+                                    maxLength: 1024
+                                    type: string
+                                  defaultJSON:
+                                    description: |-
+                                      DefaultJSON is the JSON value used when From does not exist in the response, or
+                                      when select matches no element (for example "eu-1", 3 or null). Without it, a
+                                      missing value fails the workflow.
+                                    maxLength: 1024
+                                    type: string
+                                  from:
+                                    description: |-
+                                      From is a JSON Pointer into the response, for example /id. With select it is
+                                      relative to the selected array element, and empty publishes the whole element. A
+                                      template output has no from.
+                                    maxLength: 512
+                                    pattern: ^(/.*)?$
+                                    type: string
+                                  name:
+                                    description: Name identifies the output within
+                                      its step.
+                                    maxLength: 63
+                                    pattern: ^[a-zA-Z][a-zA-Z0-9_-]*$
+                                    type: string
+                                  select:
+                                    description: |-
+                                      Select picks one element of an array in the response, so that From does not depend
+                                      on its position.
+                                    properties:
+                                      array:
+                                        description: |-
+                                          Array is a JSON Pointer to the array in the response. Empty means that the response
+                                          itself is the array.
+                                        maxLength: 512
+                                        pattern: ^(/.*)?$
+                                        type: string
+                                      where:
+                                        description: |-
+                                          Where lists the conditions an element must all satisfy. The first element in
+                                          array order that does is selected.
+                                        items:
+                                          description: WorkflowCondition compares
+                                            one field of an array element with an
+                                            expected value.
+                                          properties:
+                                            equalsFrom:
+                                              description: |-
+                                                EqualsFrom reads the expected value, a string, from a ConfigMap in the Workflow's
+                                                namespace when the step's output is read.
+                                              properties:
+                                                key:
+                                                  maxLength: 253
+                                                  minLength: 1
+                                                  type: string
+                                                name:
+                                                  maxLength: 253
+                                                  minLength: 1
+                                                  type: string
+                                              required:
+                                              - key
+                                              - name
+                                              type: object
+                                            equalsJSON:
+                                              description: EqualsJSON is the expected
+                                                value as JSON (for example true, "ready"
+                                                or 3).
+                                              maxLength: 1024
+                                              type: string
+                                            equalsOutput:
+                                              description: |-
+                                                EqualsOutput compares with an output published by an earlier step. The comparison is
+                                                exact, on the whole value: it is never a substring match.
+                                              properties:
+                                                output:
+                                                  maxLength: 63
+                                                  pattern: ^[a-zA-Z][a-zA-Z0-9_-]*$
+                                                  type: string
+                                                step:
+                                                  maxLength: 40
+                                                  pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                                                  type: string
+                                              required:
+                                              - output
+                                              - step
+                                              type: object
+                                            equalsParameter:
+                                              description: |-
+                                                EqualsParameter compares with a parameter of the Workflow's spec.parameters. The
+                                                comparison is exact, on the whole value.
+                                              maxLength: 63
+                                              pattern: ^[a-zA-Z][a-zA-Z0-9_-]*$
+                                              type: string
+                                            field:
+                                              description: Field is a JSON Pointer
+                                                relative to the array element, for
+                                                example /name.
+                                              maxLength: 512
+                                              pattern: ^/.+$
+                                              type: string
+                                          required:
+                                          - field
+                                          type: object
+                                          x-kubernetes-validations:
+                                          - message: exactly one of equalsJSON, equalsFrom,
+                                              equalsOutput or equalsParameter must
+                                              be set
+                                            rule: '(has(self.equalsJSON) ? 1 : 0)
+                                              + (has(self.equalsFrom) ? 1 : 0) + (has(self.equalsOutput)
+                                              ? 1 : 0) + (has(self.equalsParameter)
+                                              ? 1 : 0) == 1'
+                                        maxItems: 8
+                                        minItems: 1
+                                        type: array
+                                        x-kubernetes-list-type: atomic
+                                    required:
+                                    - where
+                                    type: object
+                                  sensitive:
+                                    description: Sensitive stores the value in a per-workflow
+                                      Secret instead of the Workflow status.
+                                    type: boolean
+                                  template:
+                                    description: |-
+                                      Template builds the value as a string from the response-independent values it names,
+                                      instead of reading the response: {{parameters.<name>}}, {{steps.<step>.outputs.<name>}}
+                                      for an earlier step, and {{outputs.<name>}} for a template output declared above it in
+                                      the same step. For example "P2P-{{parameters.clientName}}{{parameters.segmentSuffix}}".
+                                      Values must be strings, numbers or booleans. The output is published when the step
+                                      completes, and in debug mode too.
+                                    maxLength: 1024
+                                    type: string
+                                required:
+                                - name
+                                type: object
+                                x-kubernetes-validations:
+                                - message: a template output has no from or select;
+                                    any other needs from, which may be empty only
+                                    together with select
+                                  rule: 'has(self.template) ? (!has(self.select) &&
+                                    (!has(self.from) || size(self.from) == 0)) : ((has(self.from)
+                                    && size(self.from) > 0) || has(self.select))'
+                              maxItems: 32
+                              type: array
+                              x-kubernetes-list-type: atomic
+                            retryOnStatusCodes:
+                              description: |-
+                                RetryOnStatusCodes lists HTTP statuses of a poll response (for example 404 or 503)
+                                that mean "not ready yet" instead of a failure. Such a poll consumes one of
+                                maxAttempts. Any other non-2xx status fails the workflow. It never applies to
+                                the step's initial request.
+                              items:
+                                format: int32
+                                maximum: 599
+                                minimum: 100
+                                type: integer
+                              maxItems: 16
+                              type: array
+                              x-kubernetes-list-type: set
+                            retryOnTransportErrors:
+                              description: |-
+                                RetryOnTransportErrors treats a poll that timed out or failed at the network
+                                level as "not ready yet". Invalid requests and oversized responses still fail.
+                              type: boolean
+                            templateRef:
+                              description: |-
+                                TemplateRef names the ApiCallTemplate used for each polling request, which creates an
+                                ApiCall for every poll. Leave it out when the poll just sends the step's own request
+                                again: then the step's ApiCall repeats it by itself, as one object, up to maxAttempts
+                                requests in all (the first included), and only a GET can be repeated that way. Without
+                                templateRef, inputs must be empty, and outputs are read from the final response.
+                              properties:
+                                name:
+                                  maxLength: 253
+                                  minLength: 1
+                                  type: string
+                              required:
+                              - name
+                              type: object
+                          required:
+                          - conditionJSONPointer
+                          type: object
+                        retry:
+                          description: |-
+                            Retry sends the step's request again, from inside its ApiCall (one object, with
+                            status.attempts), when it fails with a retryable error. Only GET requests can be
+                            retried, because repeating any other method could do the same operation twice; a step
+                            that sets retry on a template with another method fails before sending anything. It
+                            cannot be combined with a poll that has no templateRef, which has its own tolerance.
+                          properties:
+                            backoffSeconds:
+                              default: 5
+                              description: BackoffSeconds is the wait between a failure
+                                and the next request.
+                              format: int32
+                              maximum: 3600
+                              minimum: 1
+                              type: integer
+                            maxAttempts:
+                              default: 3
+                              description: MaxAttempts is the total number of requests,
+                                the first one included.
+                              format: int32
+                              maximum: 10
+                              minimum: 2
+                              type: integer
+                            onTransportErrors:
+                              default: true
+                              description: |-
+                                OnTransportErrors also retries a request that timed out or failed at the network
+                                level. Invalid requests and oversized responses are never retried.
+                              type: boolean
+                            statusCodes:
+                              default:
+                              - 429
+                              - 502
+                              - 503
+                              - 504
+                              description: |-
+                                StatusCodes lists the HTTP statuses of the response that are worth another try.
+                                Any other non-2xx status fails the workflow at once.
+                              items:
+                                format: int32
+                                maximum: 599
+                                minimum: 100
+                                type: integer
+                              maxItems: 16
+                              type: array
+                              x-kubernetes-list-type: set
+                          type: object
+                        templateRef:
+                          description: |-
+                            TemplateRef names the ApiCallTemplate that defines this step's request.
+                            The Workflow runs a child ApiCall created from it, owned by the Workflow.
+                          properties:
+                            name:
+                              maxLength: 253
+                              minLength: 1
+                              type: string
+                          required:
+                          - name
+                          type: object
+                      required:
+                      - templateRef
+                      type: object
+                    name:
+                      maxLength: 40
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                      type: string
+                    terraform:
+                      description: |-
+                        WorkflowTerraformStep provisions infrastructure with terraform-engine. Its state is kept
+                        in S3-compatible storage under State.Key, independently of the workflow: any later
+                        workflow that uses the same key works on the same state and so on the same resources.
+                        Every Terraform step works in its own folder of the workflow's workspace, named after
+                        the step, so a workflow can have any number of them.
+                      properties:
+                        envFromSecrets:
+                          description: |-
+                            Secret names in the workflow namespace whose keys are exposed as environment variables to the Terraform Job.
+                            The storage credentials (AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY) must come from one of them.
+                          items:
+                            type: string
+                          maxItems: 8
+                          type: array
+                        inputs:
+                          description: |-
+                            Inputs set values published by earlier steps into terraform.auto.tfvars.json;
+                            To is a JSON pointer such as /cluster_id naming the Terraform variable.
+                          items:
+                            description: |-
+                              WorkflowInput sets a value into the request of a step: into a JSON object body (To) or
+                              into the query string of the endpoint (ToQuery) or into its path (ToPath). The value comes from exactly one source:
+                              an output of an earlier step (Step and Output), a Workflow parameter (Parameter), or a
+                              key of a ConfigMap (ConfigMapKeyRef).
+                            properties:
+                              asNumber:
+                                description: |-
+                                  AsNumber sets a value into the body as a JSON number, for example the string "4000" of a
+                                  parameter as 4000, for an API that wants a number. A number passes as it is, and a string
+                                  must hold one; anything else is refused. Without it the value keeps its JSON type.
+                                type: boolean
+                              asString:
+                                description: |-
+                                  AsString sets a number or a boolean into the body as its text, for example 3619 as "3619",
+                                  for an API that wants a string. Without it the value keeps its JSON type. A string is set
+                                  as it is, and any other value (an object, an array, null) is refused.
+                                type: boolean
+                              configMapKeyRef:
+                                description: |-
+                                  ConfigMapKeyRef reads a string from a ConfigMap in the Workflow's namespace when the
+                                  step starts.
+                                properties:
+                                  key:
+                                    maxLength: 253
+                                    minLength: 1
+                                    type: string
+                                  name:
+                                    maxLength: 253
+                                    minLength: 1
+                                    type: string
+                                required:
+                                - key
+                                - name
+                                type: object
+                              output:
+                                description: Output is the name of the output declared
+                                  by that step.
+                                maxLength: 63
+                                pattern: ^[a-zA-Z][a-zA-Z0-9_-]*$
+                                type: string
+                              parameter:
+                                description: Parameter is the name of a parameter
+                                  declared in the Workflow's spec.parameters.
+                                maxLength: 63
+                                pattern: ^[a-zA-Z][a-zA-Z0-9_-]*$
+                                type: string
+                              step:
+                                description: |-
+                                  Step is the name of the step that publishes the output. It must come before the
+                                  current step (a poll may also use outputs of its own step's initial request).
+                                maxLength: 40
+                                pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                                type: string
+                              to:
+                                description: To is a non-root JSON Pointer into the
+                                  target object, for example /vdcId.
+                                maxLength: 512
+                                pattern: ^/.+$
+                                type: string
+                              toPath:
+                                description: |-
+                                  ToPath is the name of a {placeholder} in the path of the endpoint, for example env_id
+                                  for /envs/{env_id}/segments. The value is escaped as a path segment and must be a
+                                  string, number or boolean. The endpoint must contain the placeholder. Only API steps
+                                  support it.
+                                maxLength: 63
+                                pattern: ^[A-Za-z0-9_.-]+$
+                                type: string
+                              toQuery:
+                                description: |-
+                                  ToQuery is the name of a query parameter of the endpoint to set, for example
+                                  block_id. It replaces a parameter of the same name in the template's endpoint, and
+                                  the value must be a string, number or boolean. Only API steps support it.
+                                maxLength: 63
+                                pattern: ^[A-Za-z0-9_.-]+$
+                                type: string
+                            type: object
+                            x-kubernetes-validations:
+                            - message: exactly one of to, toQuery or toPath must be
+                                set
+                              rule: '(has(self.to) ? 1 : 0) + (has(self.toQuery) ?
+                                1 : 0) + (has(self.toPath) ? 1 : 0) == 1'
+                            - message: asString only applies to an input set into
+                                the body with to
+                              rule: '!has(self.asString) || has(self.to)'
+                            - message: asNumber only applies to an input set into
+                                the body with to
+                              rule: '!has(self.asNumber) || has(self.to)'
+                            - message: asString and asNumber cannot be used together
+                              rule: '!has(self.asString) || !has(self.asNumber)'
+                            - message: step and output must be set together
+                              rule: has(self.step) == has(self.output)
+                            - message: exactly one of step and output, parameter,
+                                or configMapKeyRef must be set
+                              rule: '(has(self.output) ? 1 : 0) + (has(self.parameter)
+                                ? 1 : 0) + (has(self.configMapKeyRef) ? 1 : 0) ==
+                                1'
+                          maxItems: 32
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        outputs:
+                          description: |-
+                            Outputs publish values from the Terraform outputs (the "output" blocks of the
+                            template) for later steps. They are read from the state once the Job succeeds,
+                            as one JSON object {"<output name>": value}, so From is a JSON Pointer such as
+                            /vpc_id or /ips/0. Terraform outputs marked sensitive are always kept in the Secret.
+                          items:
+                            description: |-
+                              WorkflowOutput publishes one named value from a JSON response so that later steps
+                              can use it, instead of depending on the shape of the previous response.
+                            properties:
+                              debugJSON:
+                                description: |-
+                                  DebugJSON is the value published when the step runs in debug mode, where nothing is
+                                  sent and there is no response to read. It is never used for a real response, so a
+                                  missing field cannot silently turn into it. Without it, a debug step publishes nothing.
+                                maxLength: 1024
+                                type: string
+                              defaultJSON:
+                                description: |-
+                                  DefaultJSON is the JSON value used when From does not exist in the response, or
+                                  when select matches no element (for example "eu-1", 3 or null). Without it, a
+                                  missing value fails the workflow.
+                                maxLength: 1024
+                                type: string
+                              from:
+                                description: |-
+                                  From is a JSON Pointer into the response, for example /id. With select it is
+                                  relative to the selected array element, and empty publishes the whole element. A
+                                  template output has no from.
+                                maxLength: 512
+                                pattern: ^(/.*)?$
+                                type: string
+                              name:
+                                description: Name identifies the output within its
+                                  step.
+                                maxLength: 63
+                                pattern: ^[a-zA-Z][a-zA-Z0-9_-]*$
+                                type: string
+                              select:
+                                description: |-
+                                  Select picks one element of an array in the response, so that From does not depend
+                                  on its position.
+                                properties:
+                                  array:
+                                    description: |-
+                                      Array is a JSON Pointer to the array in the response. Empty means that the response
+                                      itself is the array.
+                                    maxLength: 512
+                                    pattern: ^(/.*)?$
+                                    type: string
+                                  where:
+                                    description: |-
+                                      Where lists the conditions an element must all satisfy. The first element in
+                                      array order that does is selected.
+                                    items:
+                                      description: WorkflowCondition compares one
+                                        field of an array element with an expected
+                                        value.
+                                      properties:
+                                        equalsFrom:
+                                          description: |-
+                                            EqualsFrom reads the expected value, a string, from a ConfigMap in the Workflow's
+                                            namespace when the step's output is read.
+                                          properties:
+                                            key:
+                                              maxLength: 253
+                                              minLength: 1
+                                              type: string
+                                            name:
+                                              maxLength: 253
+                                              minLength: 1
+                                              type: string
+                                          required:
+                                          - key
+                                          - name
+                                          type: object
+                                        equalsJSON:
+                                          description: EqualsJSON is the expected
+                                            value as JSON (for example true, "ready"
+                                            or 3).
+                                          maxLength: 1024
+                                          type: string
+                                        equalsOutput:
+                                          description: |-
+                                            EqualsOutput compares with an output published by an earlier step. The comparison is
+                                            exact, on the whole value: it is never a substring match.
+                                          properties:
+                                            output:
+                                              maxLength: 63
+                                              pattern: ^[a-zA-Z][a-zA-Z0-9_-]*$
+                                              type: string
+                                            step:
+                                              maxLength: 40
+                                              pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                                              type: string
+                                          required:
+                                          - output
+                                          - step
+                                          type: object
+                                        equalsParameter:
+                                          description: |-
+                                            EqualsParameter compares with a parameter of the Workflow's spec.parameters. The
+                                            comparison is exact, on the whole value.
+                                          maxLength: 63
+                                          pattern: ^[a-zA-Z][a-zA-Z0-9_-]*$
+                                          type: string
+                                        field:
+                                          description: Field is a JSON Pointer relative
+                                            to the array element, for example /name.
+                                          maxLength: 512
+                                          pattern: ^/.+$
+                                          type: string
+                                      required:
+                                      - field
+                                      type: object
+                                      x-kubernetes-validations:
+                                      - message: exactly one of equalsJSON, equalsFrom,
+                                          equalsOutput or equalsParameter must be
+                                          set
+                                        rule: '(has(self.equalsJSON) ? 1 : 0) + (has(self.equalsFrom)
+                                          ? 1 : 0) + (has(self.equalsOutput) ? 1 :
+                                          0) + (has(self.equalsParameter) ? 1 : 0)
+                                          == 1'
+                                    maxItems: 8
+                                    minItems: 1
+                                    type: array
+                                    x-kubernetes-list-type: atomic
+                                required:
+                                - where
+                                type: object
+                              sensitive:
+                                description: Sensitive stores the value in a per-workflow
+                                  Secret instead of the Workflow status.
+                                type: boolean
+                              template:
+                                description: |-
+                                  Template builds the value as a string from the response-independent values it names,
+                                  instead of reading the response: {{parameters.<name>}}, {{steps.<step>.outputs.<name>}}
+                                  for an earlier step, and {{outputs.<name>}} for a template output declared above it in
+                                  the same step. For example "P2P-{{parameters.clientName}}{{parameters.segmentSuffix}}".
+                                  Values must be strings, numbers or booleans. The output is published when the step
+                                  completes, and in debug mode too.
+                                maxLength: 1024
+                                type: string
+                            required:
+                            - name
+                            type: object
+                            x-kubernetes-validations:
+                            - message: a template output has no from or select; any
+                                other needs from, which may be empty only together
+                                with select
+                              rule: 'has(self.template) ? (!has(self.select) && (!has(self.from)
+                                || size(self.from) == 0)) : ((has(self.from) && size(self.from)
+                                > 0) || has(self.select))'
+                          maxItems: 32
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        state:
+                          description: State says where the Terraform state of this
+                            step lives.
+                          properties:
+                            key:
+                              description: |-
+                                Key names the resource this step manages, for example "vdc/acme/network". Workflows
+                                that use the same key in the same namespace share one state, even at different times,
+                                so a later run with changed inputs modifies the existing resources. Concurrent runs on
+                                the same key do not overlap: the second one fails on the state lock.
+
+                                Segments are separated by "/" and use letters, digits, ".", "_" and "-". A segment can
+                                contain placeholders {{steps.<step>.outputs.<name>}} that are replaced by the output of
+                                an earlier step, which must be a string, number or boolean made of the same characters.
+                              maxLength: 512
+                              minLength: 1
+                              pattern: ^[A-Za-z0-9._{}/ -]+$
+                              type: string
+                          required:
+                          - key
+                          type: object
+                        templateRef:
+                          description: |-
+                            TemplateRef names the TerraformTemplate whose files this step runs. Its files are
+                            copied when the step starts; later edits of the template do not affect it.
+                          properties:
+                            name:
+                              maxLength: 253
+                              minLength: 1
+                              type: string
+                          required:
+                          - name
+                          type: object
+                        timeoutSeconds:
+                          default: 1800
+                          description: Maximum wall time for the Terraform Job.
+                          format: int32
+                          maximum: 7200
+                          minimum: 1
+                          type: integer
+                      required:
+                      - state
+                      - templateRef
+                      type: object
+                  required:
+                  - name
+                  type: object
+                  x-kubernetes-validations:
+                  - message: exactly one of api or terraform must be set
+                    rule: has(self.api) != has(self.terraform)
+                maxItems: 20
+                minItems: 1
+                type: array
+                x-kubernetes-list-type: atomic
+            required:
+            - steps
+            type: object
+            x-kubernetes-validations:
+            - message: deleteSteps can only contain api steps
+              rule: '!has(self.deleteSteps) || self.deleteSteps.all(s, has(s.api))'
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources: {}

@@ -1,0 +1,36 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mock-oauth-client
+  namespace: default
+type: Opaque
+stringData:
+  client-id: local-debug-client
+  client-secret: local-debug-secret
+---
+apiVersion: dinova.one/v1alpha1
+kind: ApiCall
+metadata:
+  name: mock-oauth-check
+  namespace: default
+spec:
+  method: POST
+  endpoint: https://mock-api.apicall-debug.svc.cluster.local:8080/echo
+  headers:
+    Content-Type: application/json
+  body: |
+    {"message":"hello from ApiCall"}
+  timeoutSeconds: 30
+  authentication:
+    type: OAuth2ClientCredentials
+    tokenURL: https://mock-api.apicall-debug.svc.cluster.local:8080/oauth/token
+    clientIDSecretRef:
+      name: mock-oauth-client
+      key: client-id
+    clientSecretSecretRef:
+      name: mock-oauth-client
+      key: client-secret
+    clientAuthenticationMethod: ClientSecretBasic
+    scopes:
+      - debug:echo
+  storeResponseBody: true

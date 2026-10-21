@@ -1,0 +1,26 @@
+{
+  "method": "POST",
+  "url": "https://portal.admin.dinova.cloud/api/v1/fortigate-vm/vcenter/{env_id}/deliver",
+  "headers": {
+    "X-API-Key": "<PORTAL_API_KEY>",
+    "Content-Type": "application/json",
+    "Accept": "application/json"
+  },
+  "body": {
+    "vm_name": "fw-cliente-02",
+    "template_id": 3,
+    "assigned_ip": "10.10.100.20",
+    "netmask": "255.255.255.0",
+    "gateway": "10.10.100.1",
+    "cliente": "ACME Srl",
+    "rif_contratto": "CTR-2026-001",
+    "custom_final_script": "",
+    "forticloud_license_account_id": "account@example.com",
+    "forticloud_license_account_password": "<PASSWORD_FORTICLOUD>",
+    "network_mode": "manual",
+    "resource_pool": "Cluster/Resources/RP-Clienti",
+    "dest_folder": "Clienti/ACME",
+    "portgroup_name": "PG-VLAN-100",
+    "itop_subnet_id": "42"
+  }
+}

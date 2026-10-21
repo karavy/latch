@@ -1,0 +1,28 @@
+{
+  "method": "POST",
+  "url": "https://portal.admin.dinova.cloud/api/v1/fortigate-vm/vcenter/{env_id}/deliver",
+  "headers": {
+    "X-API-Key": "<PORTAL_API_KEY>",
+    "Content-Type": "application/json",
+    "Accept": "application/json"
+  },
+  "body": {
+    "vm_name": "fw-cliente-01",
+    "template_id": 3,
+    "assigned_ip": "178.239.21.35",
+    "netmask": "255.255.255.254",
+    "gateway": "178.239.21.34",
+    "cliente": "ACME Srl",
+    "rif_contratto": "CTR-2026-001",
+    "custom_final_script": "",
+    "cpu_count": 2,
+    "ram_gb": 4,
+    "flexvm_config_id": "12345",
+    "flexvm_comment": "ACME Srl — fw-cliente-01",
+    "network_mode": "p2p",
+    "resource_pool": "Cluster/Resources/RP-Clienti",
+    "dest_folder": "Clienti/ACME",
+    "nsx_segment_id": "seg-p2p-acme",
+    "nsx_segment_network": "178.239.21.34/31"
+  }
+}

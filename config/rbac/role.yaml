@@ -1,0 +1,81 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: manager-role
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  verbs:
+  - create
+  - get
+- apiGroups:
+  - ""
+  resources:
+  - persistentvolumeclaims
+  verbs:
+  - create
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - create
+  - get
+  - update
+- apiGroups:
+  - batch
+  resources:
+  - jobs
+  verbs:
+  - create
+  - get
+  - list
+  - watch
+- apiGroups:
+  - dinova.one
+  resources:
+  - apicalls
+  - baseclusters
+  - workflows
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - dinova.one
+  resources:
+  - apicalls/finalizers
+  - baseclusters/finalizers
+  - workflows/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - dinova.one
+  resources:
+  - apicalls/status
+  - baseclusters/status
+  - workflows/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - dinova.one
+  resources:
+  - apicalltemplates
+  - terraformtemplates
+  - workflowtemplates
+  verbs:
+  - get
+  - list
+  - watch

@@ -1,0 +1,25 @@
+{
+  "method": "POST",
+  "url": "https://portal.admin.dinova.cloud/api/v1/fortigate-vm/vcloud/{env_id}/deliver",
+  "headers": {
+    "X-API-Key": "<PORTAL_API_KEY>",
+    "Content-Type": "application/json",
+    "Accept": "application/json"
+  },
+  "body": {
+    "vm_name": "fw-prova-04",
+    "template_id": 5,
+    "assigned_ip": "192.168.50.11",
+    "netmask": "255.255.255.0",
+    "gateway": "192.168.50.1",
+    "cliente": "ACME Srl",
+    "rif_contratto": "CTR-2026-002",
+    "custom_final_script": "",
+    "org_name": "ORG-ACME",
+    "org_id": "urn:vcloud:org:00000000-0000-0000-0000-000000000000",
+    "vdc_name": "VDC-ACME",
+    "vdc_id": "urn:vcloud:vdc:00000000-0000-0000-0000-000000000000",
+    "create_vdc": false,
+    "vcloud_network_id": "urn:vcloud:network:00000000-0000-0000-0000-000000000000"
+  }
+}

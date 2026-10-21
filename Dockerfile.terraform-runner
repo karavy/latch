@@ -1,0 +1,27 @@
+# syntax=docker/dockerfile:1.7
+FROM golang:1.26 AS builder
+WORKDIR /workspace
+COPY --from=api-engine / /workspace/api-engine
+COPY --from=terraform-engine / /workspace/terraform-engine
+COPY go.mod go.sum /workspace/operator/
+COPY cmd/terraform-runner /workspace/operator/cmd/terraform-runner
+WORKDIR /workspace/operator
+RUN go mod download
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o /terraform-runner ./cmd/terraform-runner
+
+FROM alpine:3.22 AS tofu
+ARG TOFU_VERSION=1.13.1
+RUN apk add --no-cache ca-certificates wget unzip \
+    && wget -q "https://github.com/opentofu/opentofu/releases/download/v${TOFU_VERSION}/tofu_${TOFU_VERSION}_linux_amd64.zip" -O /tmp/tofu.zip \
+    && unzip -p /tmp/tofu.zip tofu > /tofu \
+    && chmod 0755 /tofu \
+    && rm /tmp/tofu.zip
+
+FROM alpine:3.22
+RUN apk add --no-cache ca-certificates \
+    && addgroup -S -g 65532 runner \
+    && adduser -S -D -H -u 65532 -G runner runner
+COPY --from=tofu /tofu /usr/local/bin/tofu
+COPY --from=builder /terraform-runner /usr/local/bin/terraform-runner
+USER 65532:65532
+ENTRYPOINT ["/usr/local/bin/terraform-runner"]

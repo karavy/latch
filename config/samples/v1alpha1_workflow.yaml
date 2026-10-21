@@ -1,0 +1,17 @@
+apiVersion: dinova.one/v1alpha1
+kind: Workflow
+metadata:
+  labels:
+    app.kubernetes.io/name: latch
+    app.kubernetes.io/managed-by: kustomize
+  name: workflow-sample
+spec:
+  # Templates run in order, and the first one that fails stops the Workflow. A template can be
+  # used twice, under two names. Parameters give a value to the ones the template declares.
+  templates:
+    - name: create
+      templateRef:
+        name: workflowtemplate-sample
+      parameters:
+        - {name: clientName, value: acme}
+        - {name: region, value: eu-2}

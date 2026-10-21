@@ -1,0 +1,94 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: apicall-debug
+  labels:
+    app.kubernetes.io/name: apicall-debug-api
+    app.kubernetes.io/managed-by: kustomize
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mock-api
+  namespace: apicall-debug
+  labels:
+    app.kubernetes.io/name: apicall-debug-api
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: apicall-debug-api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: apicall-debug-api
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: mock-api
+          image: latch-mock-api:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: PORT
+              value: "8080"
+            - name: TLS_CERT_FILE
+              value: /var/run/mock-api-tls/tls.crt
+            - name: TLS_KEY_FILE
+              value: /var/run/mock-api-tls/tls.key
+          readinessProbe:
+            tcpSocket:
+              port: http
+          livenessProbe:
+            tcpSocket:
+              port: http
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: mock-api-tls
+              mountPath: /var/run/mock-api-tls
+              readOnly: true
+      volumes:
+        - name: mock-api-tls
+          secret:
+            secretName: mock-api-tls
+            optional: true
+            defaultMode: 0440
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mock-api
+  namespace: apicall-debug
+  labels:
+    app.kubernetes.io/name: apicall-debug-api
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: apicall-debug-api
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP

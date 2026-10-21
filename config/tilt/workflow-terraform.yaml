@@ -1,0 +1,69 @@
+# An API call whose result starts a Terraform run: the VDC created through the mock API
+# gives the Terraform variables and the key of the Terraform state. Running the workflow
+# again with another VDC name would use another state; the same name would modify the
+# resource that already exists.
+apiVersion: dinova.one/v1alpha1
+kind: TerraformTemplate
+metadata:
+  name: tilt-vdc-record
+  namespace: default
+spec:
+  files:
+    - name: main.tf
+      content: |
+        variable "vdc_id" {
+          type = string
+        }
+        variable "vdc_name" {
+          type = string
+        }
+        resource "terraform_data" "vdc" {
+          input = "${var.vdc_name}:${var.vdc_id}"
+        }
+        output "record" {
+          value = terraform_data.vdc.output
+        }
+        output "admin_token" {
+          value     = "token-for-${var.vdc_name}"
+          sensitive = true
+        }
+---
+apiVersion: dinova.one/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: tilt-api-then-terraform
+  namespace: default
+spec:
+  steps:
+    - name: create-vdc
+      api:
+        templateRef:
+          name: tilt-create-vdc
+        outputs:
+          - {name: vdcId, from: /id}
+          - {name: vdcName, from: /name}
+    - name: provision
+      terraform:
+        templateRef:
+          name: tilt-vdc-record
+        state:
+          key: vdc/{{steps.create-vdc.outputs.vdcName}}/record
+        envFromSecrets:
+          - tfstate-credentials
+        inputs:
+          - {step: create-vdc, output: vdcId, to: /vdc_id}
+          - {step: create-vdc, output: vdcName, to: /vdc_name}
+        outputs:
+          - {name: record, from: /record}
+          - {name: token, from: /admin_token}
+---
+apiVersion: dinova.one/v1alpha1
+kind: Workflow
+metadata:
+  name: tilt-api-then-terraform
+  namespace: default
+spec:
+  templates:
+    - name: run
+      templateRef:
+        name: tilt-api-then-terraform

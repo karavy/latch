@@ -1,0 +1,56 @@
+# Runs the p2p-free-subnet template for one client. A Workflow is immutable and runs once: to run
+# it again, create a new one with another name. Deleting it runs the delete steps of the
+# templates, from the last to the first.
+apiVersion: dinova.one/v1alpha1
+kind: Workflow
+metadata:
+  labels:
+    app.kubernetes.io/name: latch
+    app.kubernetes.io/component: p2p-workflow
+  name: p2p-free-subnet
+spec:
+  # Templates run in order and the first one that fails stops the Workflow. Add more entries to
+  # run other templates after this one.
+  templates:
+    - name: free-subnet
+      templateRef:
+        name: p2p-free-subnet
+      # Values for the template's parameters; the ones with a default can be left out.
+      parameters:
+        - {name: blockName, value: BLK-AUTOMAZIONE-P2P}
+        - {name: envName, value: vcloud-r1.dinova.cloud}
+        - {name: clientName, value: EXMACHINA}
+        - {name: segmentSuffix, value: -NET}
+        # No default: the name of the vCloud organization, as the orgs of the environment list it.
+        - {name: vcloudOrgName, value: testav17}
+        # Serial of the FortiFlex program, as the programs of the portal list it.
+        - {name: flexvmSerial, value: ELAVMR0000000657}
+        # Name of the FortiFlex configuration, exactly as the configs of the program list it.
+        #    firewallBundle can be:
+        #      - Istanza FortiGate SMALL - Funzionalità Base
+        #      - Istanza FortiGate SMALL - Funzionalità UTP Bundle
+        #      - Istanza FortiGate SMALL - Funzionalità Base - 3VDOM
+        #      - Istanza FortiGate SMALL - Funzionalità Base + ATP
+        #      - Istanza FortiGate MEDIUM - Funzionalità Base
+        #      - Istanza FortiGate MEDIUM - Funzionalità UTP Bundle
+        #      - Istanza FortiGate MEDIUM - Funzionalità UTP Bundle 3 VDOM
+        #      - Istanza FortiGate SHARED01
+        #      - Istanza FortiGate SHARED02
+        - {name: firewallBundle, value: "Istanza FortiGate SMALL - Funzionalità UTP Bundle"}
+        # Name of the virtual machine to deliver, and the contract it is recorded under.
+        - {name: vmName, value: fw-exmachina-01}
+        - {name: rifContratto, value: CNT.26.0000.00}
+        # Name of the VDC the delivery creates.
+        - {name: vdcName, value: FGT-CNT.26.0000.00}
+        # Name of the provider storage profile, as the profiles of the environment list it. Replace it:
+        # with CHANGEME the workflow stops at the step that checks it.
+        - {name: storageProfile, value: Cloud_Gold}
+        # Size of the FortiGate (vCPUs, GB of memory) and of the VDC (CPU in MHz, memory and storage in MB, and the percent of
+        # CPU and memory that are reserved). Numbers, written as text.
+        - {name: cpuCount, value: "1"}
+        - {name: ramGb, value: "2"}
+        - {name: vdcCpuMhz, value: "2000"}
+        - {name: vdcRamMb, value: "10240"}
+        - {name: vdcStorageMb, value: "51200"}
+        - {name: vdcCpuReservationPct, value: "100"}
+        - {name: vdcRamReservationPct, value: "100"}

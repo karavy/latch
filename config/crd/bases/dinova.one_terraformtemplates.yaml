@@ -1,0 +1,84 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: terraformtemplates.dinova.one
+spec:
+  group: dinova.one
+  names:
+    kind: TerraformTemplate
+    listKind: TerraformTemplateList
+    plural: terraformtemplates
+    singular: terraformtemplate
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: TerraformTemplate is the Schema for the terraformtemplates API
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the template; it has no status because nothing
+              executes it
+            properties:
+              files:
+                description: |-
+                  Files are the Terraform files. Names ending in .tf.tmpl are rendered by
+                  terraform-engine (<FGT_XXX> placeholders and <FGT_FOR_STR> loops) against the
+                  step's input variables; plain .tf files are used as they are.
+                items:
+                  description: TerraformFile is one file of a TerraformTemplate.
+                  properties:
+                    content:
+                      description: Content is the file body. Use a YAML block scalar.
+                      maxLength: 262144
+                      minLength: 1
+                      type: string
+                    name:
+                      description: Name is a plain file name (no directories) ending
+                        in .tf or .tf.tmpl.
+                      maxLength: 128
+                      pattern: ^[A-Za-z0-9][A-Za-z0-9._-]*\.tf(\.tmpl)?$
+                      type: string
+                  required:
+                  - content
+                  - name
+                  type: object
+                maxItems: 32
+                minItems: 1
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+            required:
+            - files
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources: {}

@@ -1,0 +1,59 @@
+apiVersion: dinova.one/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  labels:
+    app.kubernetes.io/name: latch
+    app.kubernetes.io/managed-by: kustomize
+  name: workflowtemplate-sample
+spec:
+  # A template is never executed by itself: a Workflow (see v1alpha1_workflow.yaml)
+  # names it, gives a value to each parameter and runs its steps. A parameter without a
+  # default must be given by the Workflow.
+  parameters:
+    - name: clientName
+      description: Name of the client the resource is created for.
+    - name: region
+      default: eu-1
+  steps:
+    # Steps reference existing ApiCallTemplate resources (see
+    # v1alpha1_apicalltemplate.yaml). An ApiCallTemplate is never executed: the Workflow
+    # creates an owned ApiCall from it, and the ApiCall controller only runs ApiCalls that a
+    # Workflow owns.
+    - name: create-resource
+      api:
+        templateRef:
+          name: apicalltemplate-sample
+        # Set a parameter into the request body: the body must be a JSON object. Other targets
+        # are toQuery (a query parameter) and toPath (a {placeholder} of the endpoint path).
+        inputs:
+          - {parameter: clientName, to: /name}
+          - {parameter: region, to: /region}
+        # A step can publish named values from its response (outputs), and any later step of the
+        # template can set them into its request (inputs). Sensitive outputs go to a Secret
+        # instead of the Workflow status.
+        outputs:
+          - {name: resourceId, from: /id}
+    # A step that runs a Terraform template (see v1alpha1_terraformtemplate.yaml); its
+    # inputs become the Terraform variables ("to" names the variable).
+    #
+    # - name: provision
+    #   terraform:
+    #     templateRef: {name: terraformtemplate-sample}
+    #     # Workflows that use the same key in the same namespace share one Terraform state, so
+    #     # a later run with changed inputs modifies the resources instead of creating them again.
+    #     state:
+    #       key: vdc/{{steps.create-resource.outputs.resourceId}}/network
+    #     envFromSecrets: [tfstate-credentials]   # AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
+    #     inputs:
+    #       - {step: create-resource, output: resourceId, to: /vdc_id}
+    #     outputs:
+    #       - {name: networkId, from: /network_id}
+  # Run, from the last template of the Workflow to the first, when the Workflow is deleted
+  # (api steps only). A step that needs an output of a step that never completed is skipped.
+  #
+  # deleteSteps:
+  #   - name: delete-resource
+  #     api:
+  #       templateRef: {name: apicalltemplate-delete}
+  #       inputs:
+  #         - {step: create-resource, output: resourceId, toQuery: id}

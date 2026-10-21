@@ -1,0 +1,10 @@
+# Origins the dev operator may call, on top of --apicall-allowed-origins. The operator reads
+# this ConfigMap on every request, so an edit applies without a restart.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  namespace: latch-system
+  name: operator-config
+data:
+  origins: |
+    https://dev-portal.admin.dinova.cloud:8453

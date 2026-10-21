@@ -1,0 +1,9 @@
+## Append samples of your project ##
+resources:
+- v1alpha1_basecluster.yaml
+- v1alpha1_apicall.yaml
+- v1alpha1_apicalltemplate.yaml
+- v1alpha1_terraformtemplate.yaml
+- v1alpha1_workflowtemplate.yaml
+- v1alpha1_workflow.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

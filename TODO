@@ -1,0 +1,2 @@
+casi per la delete
+test su retry job /api/v1/fortigate-vm/jobs/{job_id}/retry

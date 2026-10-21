@@ -1,0 +1,8 @@
+# Kept apart from config/samples/kustomization.yaml: apply it on its own with
+#   kubectl apply -k config/samples/p2p-workflow/
+resources:
+  - apicalltemplates.yaml
+  - workflowtemplate.yaml
+  - workflow.yaml
+  - apikey.yaml
+  - operator-config.yaml

@@ -1,0 +1,18 @@
+spec:
+  template:
+    spec:
+      containers:
+        - name: manager
+          args:
+            - --leader-elect
+            - --health-probe-bind-address=:8081
+            - --apicall-allowed-origins=https://mock-api.apicall-debug.svc.cluster.local:8080
+            - --apicall-ca-file=/etc/apicall-debug/ca.crt
+          volumeMounts:
+            - name: apicall-debug-ca
+              mountPath: /etc/apicall-debug
+              readOnly: true
+      volumes:
+        - name: apicall-debug-ca
+          configMap:
+            name: apicall-debug-ca

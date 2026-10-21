@@ -1,0 +1,4 @@
+**
+!cmd/
+!cmd/mock-api/
+!cmd/mock-api/main.go
