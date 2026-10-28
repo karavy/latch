@@ -1,0 +1,118 @@
+# A WorkflowPipeline against the in-cluster mock API, in three stages:
+#
+#   vdc (Workflow, once) ──► record (WorkflowInstance) ──► network (Workflow, once)
+#
+# vdc creates a VDC through the API. record keeps applied a Terraform resource that records it,
+# then announces the record with a PUT marked idempotent: an instance accepts an API step only
+# when it is safe to repeat at every interval. network creates a network in the VDC, named after
+# the record. The outputs pass from stage to stage with valueFrom. Like the sample Workflows,
+# the pipeline runs only with `tilt up -- --workflows`; the templates are always applied.
+apiVersion: dinova.one/v1alpha1
+kind: ApiCallTemplate
+metadata:
+  name: tilt-pipeline-announce
+  namespace: default
+spec:
+  method: PUT
+  endpoint: http://mock-api.apicall-debug.svc.cluster.local:8080/announcements/acme
+  headers:
+    Content-Type: application/json
+  body: '{"record":""}'
+  timeoutSeconds: 30
+---
+apiVersion: dinova.one/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: tilt-pipeline-vdc
+  namespace: default
+spec:
+  steps:
+    - name: create-vdc
+      api:
+        templateRef:
+          name: tilt-create-vdc
+        outputs:
+          - {name: vdcId, from: /id}
+          - {name: vdcName, from: /name}
+---
+apiVersion: dinova.one/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: tilt-pipeline-record
+  namespace: default
+spec:
+  parameters:
+    - name: vdcId
+    - name: vdcName
+  steps:
+    - name: provision
+      terraform:
+        templateRef:
+          name: tilt-vdc-record
+        state:
+          key: pipeline/{{parameters.vdcName}}/record
+        envFromSecrets:
+          - tfstate-credentials
+        inputs:
+          - {parameter: vdcId, to: /vdc_id}
+          - {parameter: vdcName, to: /vdc_name}
+        outputs:
+          - {name: record, from: /record}
+    - name: announce
+      api:
+        templateRef:
+          name: tilt-pipeline-announce
+        # A PUT that sets the record: sending it again changes nothing.
+        idempotent: true
+        inputs:
+          - {step: provision, output: record, to: /record}
+---
+apiVersion: dinova.one/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: tilt-pipeline-network
+  namespace: default
+spec:
+  parameters:
+    - name: vdcId
+    - name: networkName
+  steps:
+    - name: create-network
+      api:
+        templateRef:
+          name: tilt-create-network
+        inputs:
+          - {parameter: vdcId, to: /vdcId}
+          - {parameter: networkName, to: /name}
+        outputs:
+          - {name: networkId, from: /id}
+---
+apiVersion: dinova.one/v1alpha1
+kind: WorkflowPipeline
+metadata:
+  name: tilt-pipeline
+  namespace: default
+spec:
+  stages:
+    - name: vdc
+      workflow:
+        templateRef: {name: tilt-pipeline-vdc}
+    - name: record
+      dependsOn: [vdc]
+      parameters:
+        - name: vdcId
+          valueFrom: {stage: vdc, step: create-vdc, output: vdcId}
+        - name: vdcName
+          valueFrom: {stage: vdc, step: create-vdc, output: vdcName}
+      instance:
+        templateRef: {name: tilt-pipeline-record}
+        interval: 1h
+    - name: network
+      dependsOn: [record]
+      parameters:
+        - name: vdcId
+          valueFrom: {stage: vdc, step: create-vdc, output: vdcId}
+        - name: networkName
+          valueFrom: {stage: record, step: provision, output: record}
+      workflow:
+        templateRef: {name: tilt-pipeline-network}

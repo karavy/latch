@@ -1,0 +1,50 @@
+# Creates the Cloud DNS zone <clientName>.<domain of the parent zone>, for example
+# acme.k8s-test.dinova.services., and delegates it: in the parent zone, given by name, it writes
+# the NS record of the new domain with the name servers of the new zone. One Terraform step, so
+# the zone and its delegation are created, changed and kept together.
+#
+# The state belongs to the client's zone, not to the Workflow: every Workflow that gives the
+# same parentZone and clientName works on the same zone, so running again changes nothing, or
+# puts back a delegation removed by hand. Deleting a Workflow does not delete the zone: a
+# Workflow with terraformMode: Destroy and the same parameters deletes the delegation and the
+# zone (google-dns-zone-destroy.yaml).
+#
+# The service account of the Secret google-dns-credentials needs the role DNS Administrator
+# (roles/dns.admin) on the project of the zone and on the project of the parent zone.
+apiVersion: dinova.one/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  labels:
+    app.kubernetes.io/name: latch
+    app.kubernetes.io/component: google-dns-zone
+  name: google-dns-zone
+spec:
+  parameters:
+    - name: clientName
+      description: >-
+        Client, the first label of the new domain: lowercase letters, digits and -, not at the
+        ends. The zone is named <clientName>-<parentZone>, at most 63 characters. No default.
+    - name: parentZone
+      description: >-
+        Name in Cloud DNS of the existing parent zone (gcloud dns managed-zones list), for
+        example k8s-test-dinova-services for k8s-test.dinova.services. Its domain is read from
+        Cloud DNS. No default.
+  steps:
+    - name: zone
+      terraform:
+        templateRef:
+          name: google-dns-zone
+        inputs:
+          - {parameter: clientName, to: /client_name}
+          - {parameter: parentZone, to: /parent_zone}
+        # The state is the object <namespace>/google-dns-zone/<parentZone>/<clientName>.tfstate.
+        state:
+          key: google-dns-zone/{{parameters.parentZone}}/{{parameters.clientName}}
+        # tfstate-credentials: AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY of the state storage.
+        # google-dns-credentials: GOOGLE_CREDENTIALS and the TF_VAR_ variables of the project.
+        envFromSecrets: [tfstate-credentials, google-dns-credentials]
+        timeoutSeconds: 900
+        outputs:
+          - {name: zoneName, from: /zone_name}
+          - {name: dnsName, from: /dns_name}
+          - {name: nameServers, from: /name_servers}

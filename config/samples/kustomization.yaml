@@ -6,4 +6,6 @@ resources:
 - v1alpha1_terraformtemplate.yaml
 - v1alpha1_workflowtemplate.yaml
 - v1alpha1_workflow.yaml
+- v1alpha1_workflowinstance.yaml
+- v1alpha1_workflowpipeline.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples

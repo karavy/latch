@@ -1,0 +1,479 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: workflowinstances.dinova.one
+spec:
+  group: dinova.one
+  names:
+    kind: WorkflowInstance
+    listKind: WorkflowInstanceList
+    plural: workflowinstances
+    singular: workflowinstance
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.templateRef.name
+      name: Template
+      type: string
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
+      name: Ready
+      type: string
+    - jsonPath: .status.conditions[?(@.type=='Drifted')].status
+      name: Drifted
+      type: string
+    - jsonPath: .status.pendingPlan.id
+      name: Pending plan
+      type: string
+    - jsonPath: .status.lastRun
+      name: Last run
+      type: string
+    - jsonPath: .status.nextRunTime
+      name: Next run
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          WorkflowInstance keeps a WorkflowTemplate applied for one client or project, running it
+          again when its code changes and every interval.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the desired state of WorkflowInstance
+            properties:
+              acceptStateHolds:
+                description: |-
+                  AcceptStateHolds is passed to every run (see the Workflow's acceptStateHolds): list the ID
+                  of status.stateHold once the resources of its state have been checked, and the next run
+                  starts at once.
+                items:
+                  maxLength: 128
+                  type: string
+                maxItems: 16
+                type: array
+                x-kubernetes-list-type: set
+              approval:
+                default: Auto
+                description: |-
+                  Approval says how a change is applied. Auto (the default): every run plans and applies.
+                  Manual: every run only plans; when the plan has changes, the instance shows it as its
+                  pending plan (status.pendingPlan, condition Drifted) and applies exactly that plan once
+                  approvePlan names it. Runs plan one step at a time: the plan stops at the first step with
+                  changes, and the next run, started at once after the apply, plans the following ones.
+                enum:
+                - Auto
+                - Manual
+                type: string
+              approvePlan:
+                description: |-
+                  ApprovePlan approves the pending plan with this ID (status.pendingPlan.id). An approval
+                  of another plan is ignored: a newer plan, or a change of what the instance runs, needs a
+                  new approval.
+                maxLength: 253
+                type: string
+              deletionPolicy:
+                default: Retain
+                description: |-
+                  DeletionPolicy says what happens to the resources when the instance is deleted. Retain
+                  (the default) leaves them, and their Terraform states, as they are. Destroy destroys them
+                  first: once a run in progress has finished, the operator runs the template as a Destroy
+                  Workflow (status.destroyRun), and keeps the instance until it succeeds. If it fails, the
+                  instance stays, with the reason in its Ready condition: delete the Destroy Workflow to try
+                  again, or set Retain to give up. The Destroy Workflow is not deleted with the instance: it
+                  is the record that the resources were destroyed.
+                enum:
+                - Retain
+                - Destroy
+                type: string
+              failedRunsHistoryLimit:
+                default: 3
+                description: FailedRunsHistoryLimit is how many failed runs are kept.
+                format: int32
+                maximum: 100
+                minimum: 1
+                type: integer
+              interval:
+                description: |-
+                  Interval is the time between two runs when nothing changes, for example "6h". A change
+                  of the code starts a run at once, without waiting for it.
+                format: duration
+                type: string
+              parameters:
+                description: Parameters give a value to the parameters the template
+                  declares, as in a Workflow.
+                items:
+                  description: WorkflowParameter is a named string value.
+                  properties:
+                    name:
+                      maxLength: 63
+                      pattern: ^[a-zA-Z][a-zA-Z0-9_-]*$
+                      type: string
+                    value:
+                      maxLength: 1024
+                      type: string
+                  required:
+                  - name
+                  - value
+                  type: object
+                maxItems: 32
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+              retryInterval:
+                description: |-
+                  RetryInterval is the time before running again after a failed run, when nothing changed.
+                  It defaults to Interval.
+                format: duration
+                type: string
+              successfulRunsHistoryLimit:
+                default: 3
+                description: SuccessfulRunsHistoryLimit is how many succeeded runs
+                  are kept.
+                format: int32
+                maximum: 100
+                minimum: 1
+                type: integer
+              suspend:
+                description: Suspend stops starting runs; a run already started goes
+                  on.
+                type: boolean
+              templateRef:
+                description: |-
+                  TemplateRef names the WorkflowTemplate to run, in the instance's namespace. Its steps run
+                  again at every run, so an API step must be safe to repeat: a GET, or a step marked
+                  idempotent. A template with API steps needs approval Auto (API steps have no plan) and
+                  deletionPolicy Retain (a Destroy Workflow runs Terraform steps only), and no template may
+                  have deleteSteps.
+                properties:
+                  name:
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+              workspaceStorage:
+                default: 2Gi
+                description: WorkspaceStorage is the workspace size of each run (see
+                  Workflow spec.workspaceStorage).
+                pattern: ^[1-9][0-9]*(Mi|Gi|Ti)$
+                type: string
+            required:
+            - interval
+            - templateRef
+            type: object
+          status:
+            description: status defines the observed state of WorkflowInstance
+            properties:
+              activeRun:
+                type: string
+              conditions:
+                description: |-
+                  Conditions has Ready: True when the last run applied the current revision, or (approval
+                  Manual) found nothing to change; False with the reason otherwise (a run is in progress or
+                  failed, a plan waits for approval, the template is not supported or not ready, the
+                  instance is suspended). With approval Manual it also has Drifted: True while a plan with
+                  changes waits for approval. It has StateHold: True while status.stateHold is set.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              destroyRun:
+                description: |-
+                  DestroyRun is the Destroy Workflow that destroys the resources of an instance being
+                  deleted with deletionPolicy Destroy.
+                type: string
+              lastAppliedRevision:
+                type: string
+              lastAttemptedRevision:
+                description: |-
+                  LastAttemptedRevision is the revision of the last run that started, and
+                  LastAppliedRevision that of the last run that succeeded.
+                type: string
+              lastRun:
+                description: LastRun is the newest run, ActiveRun the one still running,
+                  if any.
+                type: string
+              lastRunPhase:
+                type: string
+              lastRunTime:
+                description: |-
+                  LastRunTime is when the newest run started, LastRunPhase how it ended (Succeeded or
+                  Failed) once it did.
+                format: date-time
+                type: string
+              nextRunTime:
+                description: NextRunTime is when the next run starts if nothing changes
+                  before.
+                format: date-time
+                type: string
+              observedGeneration:
+                description: ObservedGeneration is the generation of the spec this
+                  status describes.
+                format: int64
+                type: integer
+              pendingPlan:
+                description: |-
+                  PendingPlan is the plan waiting for approval (approval Manual): the newest plan with
+                  changes of the current revision. Approve it by setting spec.approvePlan to its ID.
+                properties:
+                  add:
+                    description: Add, Change and Destroy summarize the plan.
+                    format: int32
+                    type: integer
+                  change:
+                    format: int32
+                    type: integer
+                  destroy:
+                    format: int32
+                    type: integer
+                  id:
+                    description: |-
+                      ID is the name of the Plan run that saved the plan: the value of spec.approvePlan that
+                      approves it.
+                    type: string
+                  revision:
+                    description: Revision is the instance revision the plan was made
+                      for.
+                    type: string
+                  secret:
+                    description: Secret holds the readable plan, under the key plan.txt.
+                    type: string
+                  step:
+                    description: |-
+                      Step is the Terraform step with changes; the steps after it are planned once it is
+                      applied.
+                    type: string
+                  time:
+                    description: Time is when the plan was made.
+                    format: date-time
+                    type: string
+                  uid:
+                    description: UID is the UID of that run.
+                    type: string
+                required:
+                - add
+                - change
+                - destroy
+                - id
+                - revision
+                - secret
+                - step
+                - time
+                - uid
+                type: object
+              revision:
+                description: |-
+                  Revision is the SHA-256 of what a run would run now: this spec, the WorkflowTemplate and
+                  the current revision of each TerraformTemplate, as "sha256:<hex>". It changes when any of
+                  them changes, and that starts a run.
+                type: string
+              runs:
+                description: Runs counts the runs started; the next one is named <instance>-<runs+1>.
+                format: int64
+                type: integer
+              stateHold:
+                description: |-
+                  StateHold is what stops the runs from applying: the newest run that applies failed
+                  because one of its states is held (see the Workflow's acceptStateHolds). Condition
+                  StateHold is True while it is set.
+                properties:
+                  id:
+                    type: string
+                  reason:
+                    description: Reason is StateLockReleased or UnsavedResources,
+                      ID what to list in acceptStateHolds.
+                    type: string
+                  releasedStateLock:
+                    description: |-
+                      ReleasedStateLock is the removed lock (reason StateLockReleased), UnsavedResources the
+                      resources not saved (reason UnsavedResources).
+                    properties:
+                      created:
+                        format: date-time
+                        type: string
+                      id:
+                        description: ID, Who and Created are those of the lock file.
+                        type: string
+                      releasedAt:
+                        description: ReleasedAt is when the operator removed it.
+                        format: date-time
+                        type: string
+                      releasedBy:
+                        description: ReleasedBy is the Workflow ("<namespace>/<name>")
+                          whose step removed it.
+                        type: string
+                      who:
+                        type: string
+                    required:
+                    - created
+                    - id
+                    - releasedAt
+                    - who
+                    type: object
+                  run:
+                    description: Run and Step are where the hold stopped the instance,
+                      StateKey the state held.
+                    type: string
+                  stateKey:
+                    type: string
+                  step:
+                    type: string
+                  unsavedResources:
+                    description: |-
+                      WorkflowUnsavedResources records the resources an apply began to create and that are not in
+                      the state when it ended, failed or interrupted: the API may have created them (a create
+                      accepted whose wait failed, an interruption at the Job's time limit), so applying again may
+                      create them twice. The runner records them next to the state ("<state key>.unsaved-resources")
+                      and no step applies to that state until the ID is listed in acceptStateHolds. A create the API
+                      refused outright (a 4xx answer to the create request) is not recorded.
+                    properties:
+                      detectedAt:
+                        format: date-time
+                        type: string
+                      id:
+                        description: ID identifies the record, for acceptStateHolds.
+                        type: string
+                      recordedBy:
+                        description: RecordedBy is the Workflow ("<namespace>/<name>")
+                          whose step wrote it.
+                        type: string
+                      resources:
+                        description: Resources are the resource addresses, as in the
+                          Terraform code.
+                        items:
+                          type: string
+                        maxItems: 64
+                        type: array
+                        x-kubernetes-list-type: atomic
+                      who:
+                        description: Who is the runner that wrote the record ("runner@<pod>"),
+                          DetectedAt when.
+                        type: string
+                    required:
+                    - detectedAt
+                    - id
+                    - resources
+                    - who
+                    type: object
+                required:
+                - id
+                - reason
+                - run
+                - stateKey
+                - step
+                type: object
+              terraformRevisions:
+                description: TerraformRevisions are the current revisions of the TerraformTemplates,
+                  by step.
+                items:
+                  description: WorkflowInstanceTerraformRevision is the revision of
+                    the TerraformTemplate a step runs.
+                  properties:
+                    digest:
+                      type: string
+                    revision:
+                      format: int64
+                      type: integer
+                    step:
+                      description: Step is the name of the Terraform step.
+                      type: string
+                    template:
+                      description: Template is the TerraformTemplate, Revision and
+                        Digest its current revision.
+                      type: string
+                  required:
+                  - digest
+                  - revision
+                  - step
+                  - template
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - step
+                x-kubernetes-list-type: map
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

@@ -1,6 +1,8 @@
 # Local-development Terraform state storage: one MinIO with a "tfstate" bucket, and the
 # dev-only credentials that the operator (to read states) and the Terraform Jobs (to write
-# them) use. Never use these credentials or this emptyDir storage outside a throwaway cluster.
+# them) use. Never use these credentials outside a throwaway cluster. The data is on a
+# local-path volume of the Kind node (PVC minio-data), so the states survive a restart of the
+# pod, but not the deletion of the namespace or of the cluster.
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -18,6 +20,20 @@ stringData:
   MINIO_ROOT_USER: tfstate-dev
   MINIO_ROOT_PASSWORD: tfstate-dev-secret
 ---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: minio-data
+  namespace: tfstate-storage
+  labels:
+    app.kubernetes.io/name: tfstate-storage
+spec:
+  storageClassName: standard
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -27,6 +43,9 @@ metadata:
     app.kubernetes.io/name: tfstate-storage
 spec:
   replicas: 1
+  # Never two MinIO servers on the same data: the old pod stops before the new one starts.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: tfstate-storage
@@ -55,7 +74,8 @@ spec:
             - {name: data, mountPath: /data}
       volumes:
         - name: data
-          emptyDir: {}
+          persistentVolumeClaim:
+            claimName: minio-data
 ---
 apiVersion: v1
 kind: Service

@@ -46,12 +46,23 @@ local_resource(
          'ctr -n k8s.io images import --digests --snapshotter=overlayfs -'),
 )
 
-# Kustomize deploys CRDs, RBAC, operator, ClusterIP mock API, and a single
-# POST /echo smoke test. Tilt streams logs and reports pod/CR status.
-k8s_yaml(kustomize('config/tilt'))
+# Kustomize deploys CRDs, RBAC, operator, ClusterIP mock API, and the templates of the smoke
+# tests. Tilt streams logs and reports pod/CR status. The sample Workflows and WorkflowPipelines
+# are left out, so that starting the stack runs nothing: add them with `tilt up -- --workflows`.
+config.define_bool('workflows')
+settings = config.parse()
+objects = decode_yaml_stream(kustomize('config/tilt'))
+if not settings.get('workflows', False):
+    objects = [o for o in objects if o['kind'] not in ['Workflow', 'WorkflowPipeline']]
+k8s_yaml(encode_yaml_stream(objects))
+
+# The test certificate of the mock API: its HTTPS port serves the mock admin portal, which the
+# operator calls with an API key, and the operator only sends credentials over HTTPS to an origin
+# whose CA it trusts. Created once (Secret and ConfigMap), before the operator and the mock start.
+local_resource('mock-api-tls', cmd='hack/mock-api-tls.sh', resource_deps=['uncategorized'])
 
 # Link each workload to its locally built image in the Tilt UI.
-k8s_resource('latch-controller-manager')
-k8s_resource('mock-api', port_forwards=['8088:8080'])
+k8s_resource('latch-controller-manager', resource_deps=['mock-api-tls'])
+k8s_resource('mock-api', port_forwards=['8088:8080', '8443:8443'], resource_deps=['mock-api-tls'])
 # Terraform state storage (MinIO): S3 API on 9000 and the web console on 9001.
 k8s_resource('minio', port_forwards=['9000:9000', '9001:9001'], resource_deps=['minio-image'])

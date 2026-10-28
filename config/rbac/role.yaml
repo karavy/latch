@@ -8,12 +8,6 @@ rules:
   - ""
   resources:
   - configmaps
-  verbs:
-  - create
-  - get
-- apiGroups:
-  - ""
-  resources:
   - persistentvolumeclaims
   verbs:
   - create
@@ -23,11 +17,28 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - pods
+  verbs:
+  - get
+  - list
+- apiGroups:
+  - ""
+  resources:
   - secrets
   verbs:
   - create
   - get
   - update
+- apiGroups:
+  - apps
+  resources:
+  - controllerrevisions
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - watch
 - apiGroups:
   - batch
   resources:
@@ -42,6 +53,7 @@ rules:
   resources:
   - apicalls
   - baseclusters
+  - workflowinstances
   - workflows
   verbs:
   - create
@@ -56,6 +68,8 @@ rules:
   resources:
   - apicalls/finalizers
   - baseclusters/finalizers
+  - workflowinstances/finalizers
+  - workflowpipelines/finalizers
   - workflows/finalizers
   verbs:
   - update
@@ -64,6 +78,9 @@ rules:
   resources:
   - apicalls/status
   - baseclusters/status
+  - terraformtemplates/status
+  - workflowinstances/status
+  - workflowpipelines/status
   - workflows/status
   verbs:
   - get
@@ -79,3 +96,20 @@ rules:
   - get
   - list
   - watch
+- apiGroups:
+  - dinova.one
+  resources:
+  - workflowpipelines
+  verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - events.k8s.io
+  resources:
+  - events
+  verbs:
+  - create
+  - patch

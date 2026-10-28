@@ -1,0 +1,10 @@
+{"@level":"info","@message":"OpenTofu 1.13.1","type":"version"}
+{"@level":"info","@message":"openstack_networking_router_v2.r: Creating...","hook":{"resource":{"addr":"openstack_networking_router_v2.r"},"action":"create"},"type":"apply_start"}
+{"@level":"info","@message":"openstack_compute_instance_v2.vm[\"a\"]: Creating...","hook":{"resource":{"addr":"openstack_compute_instance_v2.vm[\"a\"]"},"action":"create"},"type":"apply_start"}
+{"@level":"info","@message":"openstack_compute_instance_v2.vm[\"a\"]: Creation complete after 9s","hook":{"resource":{"addr":"openstack_compute_instance_v2.vm[\"a\"]"},"action":"create"},"type":"apply_complete"}
+{"@level":"info","@message":"openstack_networking_floatingip_v2.fip[0]: Creating...","hook":{"resource":{"addr":"openstack_networking_floatingip_v2.fip[0]"},"action":"create"},"type":"apply_start"}
+{"@level":"info","@message":"openstack_compute_instance_v2.tainted: Creating...","hook":{"resource":{"addr":"openstack_compute_instance_v2.tainted"},"action":"create"},"type":"apply_start"}
+{"@level":"info","@message":"openstack_networking_port_v2.p: Creating...","hook":{"resource":{"addr":"openstack_networking_port_v2.p"},"action":"create"},"type":"apply_start"}
+{"@level":"info","@message":"openstack_compute_instance_v2.old: Destroying...","hook":{"resource":{"addr":"openstack_compute_instance_v2.old"},"action":"delete"},"type":"apply_start"}
+{"@level":"error","@message":"Error: Error waiting for openstack_networking_router_v2 x to become available","diagnostic":{"severity":"error","summary":"Error waiting for openstack_networking_router_v2 x to become available","detail":"retries exhausted","address":"openstack_networking_router_v2.r"},"type":"diagnostic"}
+{"@level":"error","@message":"Error: Error creating openstack_networking_floatingip_v2","diagnostic":{"severity":"error","summary":"Error creating openstack_networking_floatingip_v2: Expected HTTP response code [201 202] when accessing [POST https://vz:9696/v2.0/floatingips], but got 409 instead","detail":"No more IP addresses","address":"openstack_networking_floatingip_v2.fip[0]"},"type":"diagnostic"}

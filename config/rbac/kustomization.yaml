@@ -22,6 +22,12 @@ resources:
 # default, aiding admins in cluster management. Those roles are
 # not used by the latch itself. You can comment the following lines
 # if you do not want those helpers be installed with your Project.
+- workflowpipeline_admin_role.yaml
+- workflowpipeline_editor_role.yaml
+- workflowpipeline_viewer_role.yaml
+- workflowinstance_admin_role.yaml
+- workflowinstance_editor_role.yaml
+- workflowinstance_viewer_role.yaml
 - workflow_admin_role.yaml
 - workflow_editor_role.yaml
 - workflow_viewer_role.yaml

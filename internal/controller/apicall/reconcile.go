@@ -125,7 +125,7 @@ func (r *Handler) scheduleRequest(ctx context.Context, call *dinovav1alpha1.ApiC
 	}
 	store := call.Spec.StoreResponseBody == nil || *call.Spec.StoreResponseBody
 	key.Attempt = call.Status.Attempts + 1
-	if !r.Executor.reserveWithOAuth(key, request, oauth, time.Duration(timeout)*time.Second, store) {
+	if !r.Executor.reserveWithOAuth(key, request, oauth, time.Duration(timeout)*time.Second, store, keptPointers(&call.Spec)) {
 		return ctrl.Result{RequeueAfter: apiPollInterval}, nil
 	}
 	// Write before sending: after a crash an ambiguous operation is not replayed.

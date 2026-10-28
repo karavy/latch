@@ -1,0 +1,20 @@
+# The Terraform files of the step zone of the WorkflowTemplate google-dns-zone, read from the
+# ConfigMap step-google-dns-zone (see step-google-dns-zone-configmap.yaml) when the step starts:
+# the ConfigMap must be in the Workflow's namespace, and every key named here must exist.
+apiVersion: dinova.one/v1alpha1
+kind: TerraformTemplate
+metadata:
+  labels:
+    app.kubernetes.io/name: latch
+    app.kubernetes.io/component: google-dns-zone
+  name: google-dns-zone
+spec:
+  files:
+    - name: providers.tf
+      configMapKeyRef: {name: step-google-dns-zone, key: providers.tf}
+    - name: variables.tf
+      configMapKeyRef: {name: step-google-dns-zone, key: variables.tf}
+    - name: zone.tf
+      configMapKeyRef: {name: step-google-dns-zone, key: zone.tf}
+    - name: outputs.tf
+      configMapKeyRef: {name: step-google-dns-zone, key: outputs.tf}

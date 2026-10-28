@@ -666,3 +666,31 @@ func TestApplyInputsAsNumber(t *testing.T) {
 		}
 	}
 }
+
+func TestApplyInputsAsJSON(t *testing.T) {
+	resolve := resolverFrom(map[string]string{"cfg.list": `"[\"vm-1\",\"vm-2\"]"`, "cfg.object": `"{\"a\":1}"`, "cfg.bad": `"[vm-1"`, "cfg.n": `3`})
+	body, err := applyInputs([]byte(`{}`), []input{
+		{Step: "cfg", Output: "list", To: "/vms", AsJSON: true},
+		{Step: "cfg", Output: "object", To: "/extra", AsJSON: true},
+		{Step: "cfg", Output: "list", To: "/stillText"},
+	}, resolve)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"extra":{"a":1},"stillText":"[\"vm-1\",\"vm-2\"]","vms":["vm-1","vm-2"]}`; string(body) != want {
+		t.Errorf("body = %s, want %s", body, want)
+	}
+	for _, output := range []string{"bad", "n"} {
+		if _, err := applyInputs([]byte(`{}`), []input{{Step: "cfg", Output: output, To: "/x", AsJSON: true}}, resolve); err == nil {
+			t.Errorf("%s: a value that is not a string of JSON must be refused", output)
+		}
+	}
+	for _, combined := range []input{
+		{Step: "cfg", Output: "list", To: "/x", AsJSON: true, AsString: true},
+		{Step: "cfg", Output: "list", To: "/x", AsJSON: true, AsNumber: true},
+	} {
+		if _, err := applyInputs([]byte(`{}`), []input{combined}, resolve); err == nil {
+			t.Errorf("asJSON combined with %+v must be refused", combined)
+		}
+	}
+}

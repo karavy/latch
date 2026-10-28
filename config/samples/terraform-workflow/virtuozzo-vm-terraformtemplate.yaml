@@ -1,0 +1,49 @@
+# The Terraform files of the two Virtuozzo steps, read from the ConfigMap step-virtuozzo-vm (see
+# step-virtuozzo-vm-configmap.yaml) when the step starts: the ConfigMap must be in the Workflow's
+# namespace, and every key named here must exist, or the workflow fails. The *.tf.tmpl files are
+# rendered by terraform-engine against the step's inputs (here the list /vms, which each of them
+# repeats for every VM), the .tf files are used as they are.
+#
+# virtuozzo-network: the router and its interface.
+apiVersion: dinova.one/v1alpha1
+kind: TerraformTemplate
+metadata:
+  labels:
+    app.kubernetes.io/name: latch
+    app.kubernetes.io/component: terraform-workflow
+  name: virtuozzo-network
+spec:
+  files:
+    - name: providers.tf
+      configMapKeyRef: {name: step-virtuozzo-vm, key: providers.tf}
+    - name: provider-variables.tf
+      configMapKeyRef: {name: step-virtuozzo-vm, key: provider-variables.tf}
+    - name: network-variables.tf
+      configMapKeyRef: {name: step-virtuozzo-vm, key: network-variables.tf}
+    - name: network.tf
+      configMapKeyRef: {name: step-virtuozzo-vm, key: network.tf}
+    - name: network-outputs.tf
+      configMapKeyRef: {name: step-virtuozzo-vm, key: network-outputs.tf}
+---
+# virtuozzo-vm: the VMs and their floating IPs, one for each element of the list vms.
+apiVersion: dinova.one/v1alpha1
+kind: TerraformTemplate
+metadata:
+  labels:
+    app.kubernetes.io/name: latch
+    app.kubernetes.io/component: terraform-workflow
+  name: virtuozzo-vm
+spec:
+  files:
+    - name: providers.tf
+      configMapKeyRef: {name: step-virtuozzo-vm, key: providers.tf}
+    - name: provider-variables.tf
+      configMapKeyRef: {name: step-virtuozzo-vm, key: provider-variables.tf}
+    - name: vm-variables.tf
+      configMapKeyRef: {name: step-virtuozzo-vm, key: vm-variables.tf}
+    - name: compute.tf.tmpl
+      configMapKeyRef: {name: step-virtuozzo-vm, key: compute.tf.tmpl}
+    - name: floatingip.tf.tmpl
+      configMapKeyRef: {name: step-virtuozzo-vm, key: floatingip.tf.tmpl}
+    - name: outputs.tf.tmpl
+      configMapKeyRef: {name: step-virtuozzo-vm, key: outputs.tf.tmpl}

@@ -54,6 +54,17 @@ type ApiCallSpec struct {
 	// +kubebuilder:default=true
 	// +optional
 	StoreResponseBody *bool `json:"storeResponseBody,omitempty"`
+	// KeepJSONPointers makes status.response keep only the values these JSON Pointers name in
+	// a JSON response, each at its place (see status.response.body), instead of the whole body.
+	// A large response, such as a job with its log, then fits in the status as long as the kept
+	// values do. The pointer of retry.until is always kept. The Workflow sets it to what its
+	// step reads. Empty keeps the whole body, as does a response that is not JSON.
+	// +kubebuilder:validation:MaxItems=128
+	// +kubebuilder:validation:items:MaxLength=512
+	// +kubebuilder:validation:items:Pattern=`^(/.*)?$`
+	// +listType=atomic
+	// +optional
+	KeepJSONPointers []string `json:"keepJSONPointers,omitempty"`
 	// Retry sends the same request again, from inside this ApiCall, when it fails with a
 	// retryable error and, with until, while the response does not yet say that the work is
 	// done. Only a GET can be repeated.
@@ -117,6 +128,14 @@ type ApiCallCondition struct {
 	// +kubebuilder:validation:MaxLength=1024
 	// +optional
 	EqualsJSON string `json:"equalsJSON,omitempty"`
+	// FailWhenJSON lists the values of the same field that mean the wait can never end well, as
+	// JSON (for example "failed"). The first response that has one of them fails the ApiCall at
+	// once, instead of waiting for maxAttempts. It needs jsonPointer to exist in the response.
+	// +kubebuilder:validation:MaxItems=16
+	// +kubebuilder:validation:items:MaxLength=1024
+	// +listType=set
+	// +optional
+	FailWhenJSON []string `json:"failWhenJSON,omitempty"`
 }
 
 // APISecretKeyReference selects a key from a same-namespace Secret.
@@ -180,11 +199,14 @@ type APIResponse struct {
 	StatusCode int `json:"statusCode"`
 	// +optional
 	ContentType string `json:"contentType,omitempty"`
-	// Body is base64-encoded by JSON serialization, preserving arbitrary bytes.
-	// The operator reads at most 64 KiB per response.
+	// Body is base64-encoded by JSON serialization, preserving arbitrary bytes. With
+	// spec.keepJSONPointers it is a JSON document with only the kept values. It holds at most
+	// 64 KiB; a response is read up to the operator's --apicall-max-response-bytes.
 	// +optional
 	Body []byte `json:"body,omitempty"`
-	// Truncated indicates that the response exceeded the size limit.
+	// Truncated indicates that the body is incomplete: the response exceeded the operator's
+	// read limit (the ApiCall fails with ResponseTooLarge), or what was to be kept exceeded
+	// 64 KiB (the outcome of the request does not change).
 	// +optional
 	Truncated bool `json:"truncated,omitempty"`
 }

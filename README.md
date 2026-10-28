@@ -1,5 +1,6 @@
 # latch
 ## Lifecycle Automation with Templates, Calls and Hooks
+## Lifecycle Automation of Terraform, Calls and Hooks
 
 ## Moduli condivisi
 
@@ -81,6 +82,228 @@ del suo uso nel nome e le etichette `dinova.one/workflow` e
 `dinova.one/workflow-template`, quindi due template con step omonimi non si confondono.
 Gli output degli step sono visibili solo dentro il proprio template.
 
+## WorkflowInstance: tenere applicato un template
+
+Un Workflow è una sola esecuzione. Una [WorkflowInstance](api/v1alpha1/workflowinstance_types.go)
+è invece lo **stato desiderato** di un cliente o progetto, come la `Kustomization` di Flux o la
+CR `Terraform` del Tofu Controller: un WorkflowTemplate con dei parametri fissi, che l'operatore
+tiene applicato nel tempo lanciandolo come **nuovo Workflow** (`<istanza>-1`, `<istanza>-2`…):
+
+- **subito**, alla creazione;
+- **appena cambia quello che eseguirebbe**: una nuova [revisione](#revisioni) di uno dei suoi
+  TerraformTemplate (quindi una ConfigMap ricreata con altri file), una modifica del
+  WorkflowTemplate o dei parametri. L'istanza osserva template e TerraformTemplate, quindi non
+  aspetta l'intervallo;
+- **a ogni `interval`** anche se non cambia niente, così le modifiche fatte a mano fuori da
+  Terraform vengono riportate allo stato del codice. Dopo un run fallito aspetta `retryInterval`
+  (default: `interval`).
+
+```yaml
+kind: WorkflowInstance
+metadata:
+  name: acme-vms
+  labels: {dinova.one/client: ACME}   # copiate sui run
+spec:
+  templateRef: {name: virtuozzo-vm}
+  parameters:
+    - {name: clientName, value: ACME}
+    - {name: vms, value: '["vm-1","vm-2"]'}
+  interval: 6h
+  retryInterval: 30m
+```
+
+```
+$ kubectl get workflowinstance
+NAME       TEMPLATE       READY   LAST RUN     NEXT RUN               AGE
+acme-vms   virtuozzo-vm   True    acme-vms-2   2026-10-24T14:28:01Z   2d
+```
+
+- **Step API solo se ripetibili.** Un'istanza riesegue il template a ogni run: Terraform converge
+  sempre allo stesso stato, ma una `POST` ripetuta crea ogni volta una risorsa nuova. Per questo
+  uno step `api` è accettato solo se è sicuro da ripetere: una GET, o uno step con
+  `idempotent: true` (vedi "Step ripetibili" nella sezione [ApiCall](#apicall)). Un template con step API richiede
+  inoltre `approval: Auto` (gli step API non hanno un plan) e `deletionPolicy: Retain` (un
+  Workflow `Destroy` esegue solo step Terraform). Anche gli ApiCallTemplate degli step entrano
+  nella revisione: modificarne uno fa partire un run. I template con `deleteSteps` sono sempre
+  rifiutati, perché l'istanza cancella i suoi run vecchi e li eseguirebbe. Un template rifiutato
+  dà `Ready=False` con motivo `UnsupportedTemplate`.
+- **Revisione.** `status.revision` è lo SHA-256 di quello che un run eseguirebbe (template,
+  parametri, revisione di ogni TerraformTemplate, in `status.terraformRevisions`). Quando è
+  diversa da `status.lastAttemptedRevision` parte un run. Cambiare solo `interval`, `suspend` o i
+  limiti dello storico non fa partire niente.
+- **Un run alla volta.** Finché un run è in corso non ne parte un altro; quando finisce, si
+  ricontrolla.
+- **`Ready`** è `True` quando l'ultimo run ha applicato la revisione corrente; altrimenti `False`
+  con il motivo (`RunInProgress`, `RunFailed`, `Suspended`, `WorkflowTemplateNotFound`, il motivo
+  del TerraformTemplate non pronto…).
+- **Storico.** Restano gli ultimi `successfulRunsHistoryLimit` run riusciti e
+  `failedRunsHistoryLimit` falliti (default 3 e 3).
+- **`suspend: true`** non fa partire run nuovi; quello in corso continua.
+- **Eliminazione (`deletionPolicy`).** Con `Retain`, il default, eliminare l'istanza elimina i
+  suoi run, **non** le risorse: gli state Terraform restano. Con `Destroy` l'istanza le distrugge
+  prima di andarsene:
+  1. aspetta che il run in corso finisca (`Ready` con motivo `WaitingToDestroy`);
+  2. lancia il template come Workflow `Destroy`, chiamato `<istanza>-destroy-<inizio dell'UID>` e
+     riportato in `status.destroyRun` (`Ready` con motivo `Destroying`);
+  3. quando quel Workflow riesce, toglie il finalizer `dinova.one/instance-destroy` e l'istanza
+     sparisce. Il Workflow `Destroy` non appartiene all'istanza e resta, come registrazione della
+     distruzione.
+
+  Se il destroy fallisce l'istanza resta, con `Ready` a `DestroyFailed`: si cancella il Workflow
+  `Destroy` per riprovare, oppure si imposta `deletionPolicy: Retain` per rinunciare e lasciare
+  le risorse.
+- **Un'istanza e un Workflow a mano non vanno usati sullo stesso state:** due run in parallelo si
+  bloccano sul lock dello state.
+
+### Approvazione manuale dei plan
+
+Con `approval: Manual` l'istanza **non applica niente da sola**: ogni run (cambio di codice o
+intervallo) è un Workflow in modalità `Plan`, che fa solo il plan di ogni step e lo salva nello
+storage S3 accanto allo state.
+
+1. Se il plan non ha differenze, l'istanza resta `Ready=True` e `Drifted=False`.
+2. Se ha differenze, l'istanza passa a `Drifted=True` e `status.pendingPlan` le riassume: l'`id`
+   del plan (il nome del run), lo step, quante risorse aggiunge, modifica e distrugge, e il
+   Secret con il testo leggibile del plan (è un Secret perché il plan mostra i valori delle
+   risorse).
+   ```bash
+   kubectl get workflowinstance acme-vms -o jsonpath='{.status.pendingPlan}'
+   kubectl get secret <pendingPlan.secret> -o jsonpath='{.data.plan\.txt}' | base64 -d
+   ```
+3. Se ti va bene, lo approvi scrivendo il suo id nell'istanza:
+   ```bash
+   kubectl patch workflowinstance acme-vms --type merge -p '{"spec":{"approvePlan":"acme-vms-7"}}'
+   ```
+4. L'operatore lancia un Workflow `ApplyPlan` che applica **esattamente** quel plan salvato,
+   senza ricalcolarne uno, poi fa subito un nuovo plan per gli step successivi e per verificare
+   il risultato.
+
+- **Uno step alla volta.** Il plan si ferma al primo step con differenze: gli step dopo
+  potrebbero dipendere da quello che cambierà, e un loro plan calcolato prima sarebbe sbagliato.
+  Gli step senza differenze pubblicano gli output dal loro state, così lo step successivo si
+  può pianificare. Per questo la prima creazione conviene farla con `approval: Auto`.
+- **L'approvazione vale per quel plan.** Se il codice cambia o arriva un plan più recente,
+  l'approvazione di quello vecchio viene ignorata (il messaggio di `Drifted` lo dice). Se lo
+  state cambia dopo il plan, Terraform rifiuta il plan come "stale": il run fallisce senza
+  toccare niente. Un plan approvato non viene mai applicato due volte.
+- **Pulizia dei plan.** I file di un plan (plan, testo e riepilogo, sotto
+  `<namespace>/plans/<workflow>-<uid>/` nello storage) vengono cancellati appena il plan è
+  applicato, e comunque quando il Workflow `Plan` che li ha salvati viene cancellato (dallo
+  storico dell'istanza o a mano): il finalizer `dinova.one/plan-cleanup` lo trattiene finché la
+  cancellazione non riesce, perché un plan contiene i valori delle risorse come lo state.
+- **Workflow a mano.** Le stesse modalità valgono per un Workflow: `spec.terraformMode: Plan`
+  per un controllo, `ApplyPlan` con `spec.applyPlan` (`workflow`, `uid`, `step`) per applicare
+  un plan salvato. Sono ammesse solo con un template di soli step Terraform.
+
+### Distruggere le risorse (`terraformMode: Destroy`)
+
+Un Workflow con `spec.terraformMode: Destroy` distrugge quello che gli step del suo template
+gestiscono, negli state indicati dai parametri. Si crea come un qualunque Workflow, con gli
+stessi parametri del run che ha creato le risorse:
+
+```yaml
+kind: Workflow
+spec:
+  terraformMode: Destroy
+  templates:
+    - name: zone
+      templateRef: {name: google-dns-zone}
+      parameters:
+        - {name: clientName, value: acme}
+        - {name: parentZone, value: k8s-test-dinova-services}
+```
+
+1. **Lettura, in ordine.** Ogni step legge i suoi output dal suo state, senza Job: gli step dopo
+   possono averne bisogno per le variabili o per la chiave dello state. Uno step senza state, o
+   con uno state senza risorse, è `Skipped` ("Nothing to destroy"), e così uno la cui chiave
+   dipende da un output di uno step saltato.
+2. **Destroy, dall'ultimo step al primo.** Per ogni step non saltato parte un Job con
+   `tofu destroy`, con le stesse variabili e lo stesso state di un apply. Si va dall'ultimo
+   perché le risorse di uno step possono dipendere da quelle degli step prima.
+
+Lo state resta nello storage, senza risorse: un nuovo Workflow `Apply` ricrea tutto da capo. Come
+`Plan` e `ApplyPlan`, accetta un solo template, con soli step Terraform.
+
+Esempio completo in
+[config/samples/terraform-workflow/virtuozzo-vm-instance.yaml](config/samples/terraform-workflow/virtuozzo-vm-instance.yaml).
+
+## WorkflowPipeline: un processo in più fasi
+
+Una [WorkflowPipeline](api/v1alpha1/workflowpipeline_types.go) descrive un processo intero, per
+esempio l'attivazione di un cliente, fatto di **fasi**. Ogni fase è una WorkflowInstance (risorse
+Terraform tenute applicate) o un Workflow (operazioni una tantum, come le chiamate API).
+L'operatore crea gli oggetti delle fasi nell'ordine delle dipendenze e passa gli output da una
+fase ai parametri della successiva.
+
+```yaml
+kind: WorkflowPipeline
+metadata: {name: acme-k8s}
+spec:
+  parameters:
+    - {name: clientName, value: acme}     # a ogni fase il cui template lo dichiara
+  stages:
+    - name: vdc
+      instance: {templateRef: {name: newk8s-vdc}, interval: 6h}
+    - name: vsphere-network
+      dependsOn: [vdc]
+      parameters:
+        - name: orgName
+          valueFrom: {stage: vdc, step: vdc, output: orgName}
+      workflow: {templateRef: {name: newk8s-vsphere-network}}
+```
+
+Esempio completo, costruito su [FLUSSO.md](config/samples/newk8scluster/FLUSSO.md), in
+[config/samples/newk8scluster/](config/samples/newk8scluster/pipeline.yaml).
+
+- **Ordine.** Una fase parte quando tutte le fasi in `dependsOn` sono pronte: un'istanza con
+  `Ready=True`, un Workflow `Succeeded`. Le fasi che non dipendono l'una dall'altra girano in
+  parallelo. Dipendenze circolari o verso fasi inesistenti sono rifiutate.
+- **Nomi.** L'istanza di una fase si chiama `<pipeline>-<fase>`, i run di una fase Workflow
+  `<pipeline>-<fase>-<n>`; tutti hanno le etichette della pipeline più
+  `dinova.one/workflow-pipeline` e `dinova.one/pipeline-stage`. Nome della pipeline e nome di
+  una fase insieme non superano 55 caratteri.
+- **Parametri.** I `parameters` della pipeline vanno a ogni fase il cui template li dichiara; i
+  parametri della fase prevalgono. `valueFrom` legge un output già pubblicato dal motore del
+  Workflow (lo status del run): dal run corrente di una fase Workflow riuscita, o dal run
+  riuscito più recente di un'istanza che lo pubblica. Un output stringa passa com'è, gli altri
+  come testo JSON (nel template: `asNumber`, `asJSON`). Una fase che legge un output deve
+  dipendere, anche indirettamente, dalla fase che lo pubblica. Gli output `sensitive` non si
+  passano: finirebbero in chiaro nella spec della fase.
+- **Fasi istanza.** La pipeline tiene la spec dell'istanza allineata alla fase (`interval`,
+  `approval`, `approvePlan`, `acceptStateHolds`…: si modificano nella pipeline, non
+  nell'istanza). Se un output letto cambia, cambia la revisione dell'istanza, che riapplica da
+  sola.
+- **Fasi Workflow.** Girano una volta. Se un valore che hanno usato cambia, la fase diventa
+  `Outdated` e lo status elenca i valori cambiati (`status.stages[].changed`), senza rilanciare
+  niente. Per rilanciarla, o per riprovare una fase `Failed`, si scrive il suo Workflow corrente
+  (`status.stages[].workflow`) in `spec.rerun`:
+  ```bash
+  kubectl patch workflowpipeline acme-k8s --type merge -p '{"spec":{"rerun":["acme-k8s-fortigate-1"]}}'
+  ```
+  La fase crea un nuovo run con i valori attuali; la voce vale una volta sola, perché nomina un
+  run che non è più il corrente.
+- **`rerunOnChange` e `idempotent`.** Con `rerunOnChange: true` una fase Workflow si rilancia da
+  sola quando cambiano i suoi valori. È accettato solo se ogni step API del template è sicuro da
+  ripetere: una GET, o uno step con `idempotent: true` (per esempio una PUT che imposta una
+  configurazione, o una creazione che prima controlla se l'oggetto esiste). L'operatore non può
+  verificarlo: uno step dichiarato idempotente che non lo è può creare duplicati.
+- **Storico.** I run delle fasi Workflow restano tutti: cancellarne uno eseguirebbe i suoi
+  `deleteSteps`, che potrebbero annullare quello che il run successivo ha configurato. Le
+  istanze tengono il loro storico (`successfulRunsHistoryLimit`, `failedRunsHistoryLimit`).
+- **Stato.** `Ready` è `True` quando tutte le fasi sono `Ready`; altrimenti indica la prima
+  fase `Failed`, poi `Outdated`, poi in corso. Ogni fase ha in `status.stages` fase, oggetto e
+  messaggio:
+  ```bash
+  kubectl get workflowpipeline acme-k8s -o jsonpath='{range .status.stages[*]}{.name}{"\t"}{.phase}{"\t"}{.message}{"\n"}{end}'
+  ```
+- **Eliminazione.** Cancellare la pipeline cancella gli oggetti delle fasi in ordine inverso:
+  una fase va quando nessuna fase che dipende da lei ha ancora oggetti. Un'istanza con
+  `deletionPolicy: Destroy` distrugge prima le sue risorse, un Workflow esegue i suoi
+  `deleteSteps`: la pipeline (finalizer `dinova.one/pipeline-deletion`) aspetta che ognuno sia
+  sparito.
+- **Un oggetto, un proprietario.** Non creare a mano istanze o Workflow con i nomi delle fasi, e
+  non usare un'istanza o un Workflow a mano sugli state Terraform di una fase.
+
 ## ApiCall
 
 I file Kubebuilder [internal/controller/apicall_controller.go](internal/controller/apicall_controller.go)
@@ -134,16 +357,68 @@ pronto" e consuma un tentativo; richieste non valide, risposte troppo grandi ed
 esecuzioni perse non sono mai tollerate, e le opzioni non valgono per la chiamata
 iniziale.
 
+**Step ripetibili (`idempotent`).** `idempotent: true` su uno step API dichiara che rimandare le
+sue richieste dà lo stesso risultato (una PUT che imposta una configurazione, una creazione che
+prima controlla se l'oggetto esiste). In un Workflow non cambia niente; serve a una
+[WorkflowInstance](#workflowinstance-tenere-applicato-un-template) per accettare lo step, che
+rieseguirà a ogni run, e a una [WorkflowPipeline](#workflowpipeline-un-processo-in-più-fasi)
+per accettare `rerunOnChange` su una fase. Le GET sono ripetibili senza dichiararlo.
+L'operatore non può verificarlo: uno step dichiarato idempotente che non lo è può creare
+duplicati.
+
+**Riprendere un job fallito (`poll.recover`).** Alcune API fanno partire un job a più fasi e
+poi permettono di riprenderlo da dove si è fermato. Con `recover`, un valore del poll che è
+anche in `recover.whenJSON` (e quindi in `failWhenJSON`) non fa fallire lo step. Lo step manda
+invece la richiesta `recover.templateRef` (una sola volta, senza ripeterla), aspetta un
+`intervalSeconds` e ricomincia il poll da capo, con tutti i `maxAttempts`. Gli `inputs` della
+ripresa leggono la risposta fallita con `fromResponse` (un JSON Pointer), e `add` somma un
+numero, per esempio `{fromResponse: /last_completed_step, to: /resume_from_step, add: 1}`.
+La ripresa può ripetersi più volte, per esempio: fallisce alla fase 3, riparte dalla 3, fallisce
+alla 6, riparte dalla 6, e così via. Si ferma con `RecoveryExhausted` quando il numero
+in `progressPointer` non cresce per `maxRetriesWithoutProgress` riprese di fila (default 3),
+oppure dopo `maxRecoveries` riprese in tutto (default 10). Si ferma con `RecoveryBlocked` quando
+una condizione di `unless` vale (per esempio `/manual_review_required` uguale a `true`). Se
+la richiesta di ripresa fallisce, lo step fallisce con `RecoveryFailed`. Durante la ripresa lo
+step è `Recovering`, e `status.recoveries` elenca ogni ripresa con il valore che l'ha causata,
+il progresso letto e l'ApiCall della richiesta. Esempio nello step `wait-deliver` di
+[config/samples/p2p-workflow/workflowtemplate.yaml](config/samples/p2p-workflow/workflowtemplate.yaml).
+
 ### Step Terraform
 
 Come per le chiamate API, la definizione è separata dal workflow: un
 [TerraformTemplate](api/v1alpha1/terraformtemplate_types.go) contiene l'elenco dei file
-(`spec.files`: `name` + `content`, nome senza directory e con estensione `.tf` o
-`.tf.tmpl`) e lo step lo richiama con `terraform.templateRef`. Come l'ApiCallTemplate, non
-ha controller né status e non viene mai eseguito da solo.
+(`spec.files`: `name` + `configMapKeyRef`, nome senza directory e con estensione `.tf` o
+`.tf.tmpl`) e lo step lo richiama con `terraform.templateRef`. Il codice sta **solo** in
+ConfigMap **immutabili** (`immutable: true`): l'operatore rifiuta le altre, così il codice di
+una versione non può cambiare.
 
-All'avvio dello step il Workflow **copia** i file in una ConfigMap di cui è owner (le
-modifiche successive al template non cambiano uno step già partito) e crea un Job che monta
+#### Revisioni
+
+L'operatore fa le versioni da solo. Ogni volta che il contenuto dei file di un TerraformTemplate
+cambia (una ConfigMap cancellata e ricreata con altri file, o il template che punta a un'altra
+ConfigMap), calcola lo SHA-256 dei file e ne fa uno snapshot in una
+[ControllerRevision](https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/controller-revision-v1/)
+con il **numero di revisione** successivo, lo stesso meccanismo di StatefulSet e DaemonSet:
+
+```
+$ kubectl get terraformtemplate
+NAME           REVISION   READY   AGE
+virtuozzo-vm   3          True    2d
+```
+
+- Lo status del template riporta revisione, `digest` e le ConfigMap lette (con il loro UID).
+- File identici a quelli di una revisione ancora conservata riportano quella revisione (rollback);
+  un numero già dato non viene mai riusato. `spec.revisionHistoryLimit` (default 10) dice quante
+  revisioni tenere.
+- Se i file non si possono leggere (ConfigMap mancante o non immutabile, chiave mancante) il
+  template ha `Ready=False` con il motivo, e gli step che lo usano falliscono con quel motivo
+  invece di eseguire la revisione precedente.
+- Ogni step registra nello status del Workflow la revisione eseguita (`terraformRevision`,
+  `terraformDigest`). Uno step che parte mentre l'operatore non ha ancora fatto la revisione di
+  un template appena modificato la aspetta.
+
+All'avvio dello step il Workflow **copia** i file della revisione corrente in una ConfigMap
+immutabile di cui è owner (le revisioni successive non cambiano uno step già partito) e crea un Job che monta
 la ConfigMap, il PVC del workflow (solo file di lavoro: template renderizzati e provider) e un
 Secret con `terraform.auto.tfvars.json`, costruito dagli `inputs` dello step. Render dei
 `*.tf.tmpl` (placeholder `<FGT_NOME>` e cicli `<FGT_FOR_STR>`), `init` e `apply` li fa
@@ -178,17 +453,59 @@ risorsa è già in parte nello state e l'esecuzione successiva riparte da lì.
 ```
 
 - **Chiave:** segmenti separati da `/` con lettere, cifre, `.`, `_`, `-` (se inizia con `{{` in YAML
-  servono le virgolette). Può contenere
+  servono le virgolette). Può contenere `{{parameters.<nome>}}`, sostituito con il valore che il
+  Workflow dà al parametro (per esempio il cliente: tutti i Workflow dello stesso cliente
+  lavorano sullo stesso state), e
   `{{steps.<step>.outputs.<nome>}}`, sostituito con un output di uno step precedente (anche
-  Terraform): deve essere stringa, numero o booleano fatto degli stessi caratteri, così un
-  valore non può mai aggiungere segmenti né uscire dal percorso. L'oggetto nello storage è
+  Terraform): deve essere stringa, numero o booleano. I valori devono essere fatti degli stessi
+  caratteri dei segmenti, così non possono mai aggiungere segmenti né uscire dal percorso. L'oggetto nello storage è
   `<namespace>/<chiave>.tfstate`, quindi due namespace non condividono mai uno state.
+- **I file eseguiti restano nello storage.** Il Job salva nel bucket dello state, con le stesse
+  credenziali, i file che esegue così come escono dal render: i `.tf` (compreso
+  `backend_override.tf`), `terraform.auto.tfvars.json` e un `manifest.json`. Il prefisso è
+  `<namespace>/rendered/<workflow>-<uid>/<template>/<step>/` ed è riportato in
+  `status.templates[].steps[].renderedFiles`. Il manifest dice a quale esecuzione
+  appartengono: Workflow e UID, template, step, TerraformTemplate con revisione e digest, chiave
+  dello state, modalità, ora, e per ogni file la dimensione e lo SHA-256. Il salvataggio avviene
+  prima di `init`, quindi restano anche i file di un run fallito, e se non riesce il Job fallisce
+  prima di toccare l'infrastruttura. L'operatore non li cancella mai, neanche con il Workflow,
+  perché servono a ricostruire cosa è stato applicato. Per tenerli solo per un certo tempo si usa
+  una regola di lifecycle del bucket con prefisso `<namespace>/rendered/`, una per namespace (i
+  filtri di lifecycle non accettano caratteri jolly). Contengono i valori delle variabili, quindi
+  vanno protetti come lo state:
+  ```bash
+  aws s3 ls --recursive s3://tfstate/<namespace>/rendered/<workflow>-<uid>/
+  aws s3 cp s3://tfstate/<namespace>/rendered/<workflow>-<uid>/<template>/<step>/manifest.json -
+  ```
 - **Il backend lo scrive il runner**, in un file `backend_override.tf` che prevale su qualunque
   `backend` scritto nel template: non si può dimenticare né aggirare, e senza configurazione
   completa il Job fallisce invece di usare uno state locale che si perderebbe. Il lock dello
   state è un file nel bucket (`use_lockfile`: richiede OpenTofu ≥ 1.10 e uno storage con
   scritture condizionali): due esecuzioni sulla stessa chiave non si sovrappongono, la seconda
   fallisce con "Error acquiring the state lock".
+- **Stop prima della scadenza del Job:** il runner interrompe OpenTofu da solo poco prima di
+  `timeoutSeconds` (`TF_STOP_AFTER_SECONDS`: 120 s prima, o un quarto del timeout se è breve),
+  e il pod ha 120 s di grazia: OpenTofu finisce le richieste in corso, salva lo state e toglie il
+  lock invece di essere ucciso. Il Workflow lo dice ("reached its time limit, before its
+  timeout").
+- **State sospesi (risorse forse create fuori dallo state).** Due casi fermano gli apply su uno
+  state finché qualcuno non controlla:
+  - *lock lasciato da un runner morto*: l'operatore rimuove un lock `runner@<pod>` solo quando il
+    Job di quel pod è di un Workflow ed è finito e nessun pod con quel nome è vivo (i lock di
+    altri, o non riconducibili al Job, restano); lo registra nello step (`releasedStateLock`),
+    con un Event, e in `<state>.released-lock`; reason `StateLockReleased`;
+  - *creazioni non salvate*: quando un apply fallisce o viene interrotto, il runner confronta le
+    risorse che ha iniziato a creare con lo state salvato; quelle che mancano (es. un router la
+    cui attesa di `ACTIVE` è fallita: il provider OpenStack ne salva l'ID solo dopo) sono
+    registrate in `<state>.unsaved-resources` e nello step (`unsavedResources`); reason
+    `UnsavedResources`. Una creazione rifiutata dall'API (risposta 4xx alla richiesta di
+    creazione, es. pool esaurito) non conta: non ha creato nulla, e il retry procede come prima.
+
+  Gli step Apply e ApplyPlan su uno state sospeso falliscono, senza Job, finché l'ID non è in
+  `spec.acceptStateHolds` (del Workflow, o dell'istanza, che nel frattempo mostra
+  `status.stateHold` e la condizione `StateHold` e non riprova; accettato, riparte subito). Plan
+  e Destroy girano comunque, ma un Destroy non tocca le risorse che lo state non conosce. Prima di
+  accettare, importare o cancellare quelle risorse nel cloud.
 - **Configurazione dell'operator:** `--tfstate-s3-endpoint`, `--tfstate-s3-bucket`,
   `--tfstate-s3-region` (default `us-east-1`) e le variabili d'ambiente
   `TFSTATE_S3_ACCESS_KEY_ID` / `TFSTATE_S3_SECRET_ACCESS_KEY`, con cui l'operator **legge** lo
@@ -293,6 +610,7 @@ Il manager espone questi flag:
 | `--apicall-allowed-origins-configmap` | vuoto | `namespace/nome` di un ConfigMap la cui chiave `origins` elenca altre origini, una per riga o separate da virgole (le righe che iniziano con `#` sono commenti). Si somma a `--apicall-allowed-origins`. Viene letto a ogni richiesta, quindi una modifica vale subito, senza riavviare l'operator. Un ConfigMap assente non aggiunge origini; una voce che non è un'origine esatta, ad esempio con un path, viene ignorata e scritta nel log. |
 | `--apicall-workers` | 4 | Massimo numero di richieste HTTP concorrenti, 1–64. |
 | `--apicall-queue-size` | 64 | Capacità aggiuntiva del pool, 1–4096. I risultati completati ma non ancora persistiti occupano capacità. |
+| `--apicall-max-response-bytes` | 4194304 (4 MiB) | Massimo numero di byte letti da una risposta, almeno 65536. Una risposta più grande fa fallire l'ApiCall con `ResponseTooLarge`. Nello status finiscono comunque al massimo 64 KiB (vedi `spec.keepJSONPointers`). |
 
 Per il manifest OAuth2 di esempio, configurare
 `--apicall-allowed-origins=https://api.example.com,https://auth.example.com`
@@ -360,10 +678,17 @@ un nuovo ApiCall (per esempio lanciando un nuovo Workflow).
 `status` espone `observedGeneration`, `startedAt`, `completedAt`, condizioni
 `Ready`/`Progressing` e `response` con `statusCode`, `contentType`, `body` e
 `truncated`. `response.body` è **base64** per conservare anche dati binari;
-decodificandolo si ottiene il payload originale. Le risposte sono limitate a
-64 KiB; se il limite è superato, `Failed/ResponseTooLarge` e `truncated: true`
-indicano che il body salvato è parziale e non deve essere usato come risultato
-completo. Le risposte HTTP di errore sono conservate, mentre gli altri header
+decodificandolo si ottiene il payload originale. Una risposta viene letta fino a
+`--apicall-max-response-bytes`; oltre quel limite l'ApiCall fallisce con
+`Failed/ResponseTooLarge` e `truncated: true`. Nello status il body occupa al massimo
+64 KiB. Con `spec.keepJSONPointers` (una lista di JSON Pointer) una risposta JSON viene
+salvata ridotta ai soli valori indicati, ciascuno al suo posto (negli array gli altri
+elementi diventano `null`, così gli indici restano validi). Il puntatore di `retry.until`
+viene sempre conservato. I Workflow impostano da soli questa lista con i campi letti dallo
+step (`outputs`, `expect`, la condizione del poll, `recover`): una risposta grande, per
+esempio un job con il suo log, non fa quindi fallire lo step. Se quello che resta supera
+comunque 64 KiB, l'esito della chiamata non cambia, ma `truncated: true` indica che il
+body salvato è parziale. Lo step fallisce con `ResponseUnavailable` solo se doveva leggerlo. Le risposte HTTP di errore sono conservate, mentre gli altri header
 remoti (potenzialmente sensibili, ad esempio `Set-Cookie`) non vengono salvati.
 
 Un `202 Accepted` conclude la **chiamata HTTP**, non necessariamente il lavoro

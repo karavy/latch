@@ -68,6 +68,7 @@ spec:
           - --apicall-allowed-origins-configmap=default/operator-config
           # - --apicall-workers=4
           # - --apicall-queue-size=64
+          # - --apicall-max-response-bytes=4194304
         image: controller:latest
         name: manager
         ports:

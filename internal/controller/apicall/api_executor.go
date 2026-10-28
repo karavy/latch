@@ -1,7 +1,9 @@
 package apicall
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -14,8 +16,10 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	dinovav1alpha1 "github.com/karavy/latch/api/v1alpha1"
+	"github.com/karavy/latch/internal/jsonptr"
 )
 
+// apiResponseLimit bounds the response body kept in an ApiCall status.
 const apiResponseLimit = 64 << 10
 
 // reasonRequestFailed is the reason of an attempt that failed at the network level.
@@ -43,6 +47,7 @@ type apiOperation struct {
 	oauth   *oauth2Credentials
 	timeout time.Duration
 	store   bool
+	keep    []string
 	ctx     context.Context
 	cancel  context.CancelFunc
 	started bool
@@ -153,7 +158,7 @@ func (e *APIExecutor) work(ctx context.Context) {
 			} else {
 				response, err = e.client.Do(callCtx, request)
 			}
-			result := apiCallResult(response, err, job.store)
+			result := apiCallResult(response, err, job.store, job.keep)
 			log.V(1).Info("Completed ApiCall request", "reason", result.Reason)
 			cancelCall()
 			e.mu.Lock()
@@ -174,7 +179,7 @@ func (e *APIExecutor) work(ctx context.Context) {
 	}
 }
 
-func apiCallResult(response *apiengine.Response, err error, store bool) apiResult {
+func apiCallResult(response *apiengine.Response, err error, store bool, keep []string) apiResult {
 	result := apiResult{CompletedAt: metav1.Now()}
 	if response != nil {
 		result.Response = &dinovav1alpha1.APIResponse{
@@ -186,7 +191,14 @@ func apiCallResult(response *apiengine.Response, err error, store bool) apiResul
 			result.Response.ContentType = result.Response.ContentType[:256]
 		}
 		if store {
-			result.Response.Body = response.Body
+			var cut bool
+			// An error answer is kept whole (within the limit): it says why, and is small.
+			kept := keep
+			if !response.IsSuccess() {
+				kept = nil
+			}
+			result.Response.Body, cut = storedBody(response.Body, kept)
+			result.Response.Truncated = result.Response.Truncated || cut
 		}
 	}
 	switch {
@@ -209,19 +221,41 @@ func apiCallResult(response *apiengine.Response, err error, store bool) apiResul
 	return result
 }
 
-// reserve must precede the durable Running checkpoint, activate must follow it.
-func (e *APIExecutor) reserve(key operationKey, request apiengine.Request, timeout time.Duration, store bool) bool {
-	return e.reserveWithOAuth(key, request, nil, timeout, store)
+// storedBody returns what of a response body goes into the status: with keep, and a JSON body,
+// only the values the pointers name; and never more than apiResponseLimit bytes, in which case
+// cut is true.
+func storedBody(body []byte, keep []string) (stored []byte, cut bool) {
+	if len(keep) > 0 {
+		decoder := json.NewDecoder(bytes.NewReader(body))
+		decoder.UseNumber() // large ids keep every digit
+		var document any
+		if decoder.Decode(&document) == nil && !decoder.More() {
+			if kept, err := jsonptr.Keep(document, keep); err == nil {
+				if encoded, err := json.Marshal(kept); err == nil {
+					body = encoded
+				}
+			}
+		}
+	}
+	if len(body) > apiResponseLimit {
+		return body[:apiResponseLimit], true
+	}
+	return body, false
 }
 
-func (e *APIExecutor) reserveWithOAuth(key operationKey, request apiengine.Request, oauth *oauth2Credentials, timeout time.Duration, store bool) bool {
+// reserve must precede the durable Running checkpoint, activate must follow it.
+func (e *APIExecutor) reserve(key operationKey, request apiengine.Request, timeout time.Duration, store bool) bool {
+	return e.reserveWithOAuth(key, request, nil, timeout, store, nil)
+}
+
+func (e *APIExecutor) reserveWithOAuth(key operationKey, request apiengine.Request, oauth *oauth2Credentials, timeout time.Duration, store bool, keep []string) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.ctx == nil || e.ctx.Err() != nil || len(e.jobs) >= e.limit || e.jobs[key] != nil {
 		return false
 	}
 	jobCtx, cancelJob := context.WithCancel(e.ctx)
-	e.jobs[key] = &apiOperation{key: key, request: request, oauth: oauth, timeout: timeout, store: store, ctx: jobCtx, cancel: cancelJob}
+	e.jobs[key] = &apiOperation{key: key, request: request, oauth: oauth, timeout: timeout, store: store, keep: keep, ctx: jobCtx, cancel: cancelJob}
 	return true
 }
 

@@ -1,9 +1,11 @@
 package terraform
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"regexp"
+	"strconv"
 
 	tfengine "github.com/karavy/terraform-engine"
 	batchv1 "k8s.io/api/batch/v1"
@@ -23,6 +25,12 @@ const (
 	inputDir     = "/input"
 	runnerUser   = int64(65532)
 	jobTTL       = int32(86400)
+	// stopGraceSeconds is how long a runner pod has after SIGTERM: OpenTofu, interrupted,
+	// finishes the requests in flight for up to 60 seconds, then the runner records what it may
+	// have created without saving it.
+	stopGraceSeconds = 120
+	// stopMargin is how long before the Job's deadline the runner stops OpenTofu by itself.
+	stopMargin = 120
 
 	// DefaultTimeoutSeconds bounds the Job when a step does not set its own timeout.
 	DefaultTimeoutSeconds = int32(1800)
@@ -50,6 +58,51 @@ type JobConfig struct {
 	EnvFromSecrets []string
 	// Labels are set on the Job.
 	Labels map[string]string
+	// Mode is what the runner does: ModeApply (the default), ModePlan, ModeApplyPlan or
+	// ModeDestroy.
+	Mode string
+	// PlanKey is the object key of the saved plan, for ModePlan and ModeApplyPlan.
+	PlanKey string
+	// RenderedPrefix is where the runner stores the files it runs, see RenderedPrefix. Empty
+	// stores nothing.
+	RenderedPrefix string
+	// RenderedMetadata is a JSON object that the runner copies into the manifest.json it
+	// stores with the files, to say which run they belong to.
+	RenderedMetadata string
+}
+
+// The modes of the runner (TF_MODE), see JobConfig.Mode.
+const (
+	ModeApply     = "apply"
+	ModePlan      = "plan"
+	ModeApplyPlan = "apply-plan"
+	ModeDestroy   = "destroy"
+)
+
+// PlanKey is the object key of the saved plan of a step of a Plan workflow, next to the
+// states: "<namespace>/plans/<workflow>-<uid>/<template>/<step>.tfplan". The readable plan
+// is at the same key plus ".txt", its summary plus ".json".
+func PlanKey(namespace, workflow, uid, template, step string) string {
+	return fmt.Sprintf("%s%s/%s.tfplan", PlanPrefix(namespace, workflow, uid), template, step)
+}
+
+// PlanPrefix is the prefix of the keys of every plan a Plan workflow saved.
+func PlanPrefix(namespace, workflow, uid string) string {
+	return fmt.Sprintf("%s/plans/%s-%s/", namespace, workflow, uid)
+}
+
+// RenderedPrefix is the prefix of the object keys under which the Job of a step stores the
+// files it ran, as rendered from the TerraformTemplate, with a manifest.json: next to the
+// states and the plans, "<namespace>/rendered/<workflow>-<uid>/<template>/<step>/".
+func RenderedPrefix(namespace, workflow, uid, template, step string) string {
+	return fmt.Sprintf("%s/rendered/%s-%s/%s/%s/", namespace, workflow, uid, template, step)
+}
+
+// stopAfter is when the runner stops OpenTofu by itself (TF_STOP_AFTER_SECONDS): before the
+// Job's deadline, by stopMargin or a quarter of the timeout, so that OpenTofu has the time to
+// finish, save the state and release the lock instead of being killed.
+func stopAfter(timeout int32) int32 {
+	return timeout - min(stopMargin, timeout/4)
 }
 
 // NewJob builds a Job without retries, with a read-only root filesystem and no
@@ -63,6 +116,9 @@ func NewJob(cfg JobConfig) (*batchv1.Job, error) {
 	}
 	if err := cfg.State.Validate(); err != nil {
 		return nil, fmt.Errorf("terraform state backend: %w", err)
+	}
+	if (cfg.Mode == ModePlan || cfg.Mode == ModeApplyPlan) && cfg.PlanKey == "" {
+		return nil, errors.New("a Terraform plan needs a key to be saved at")
 	}
 	timeout := cfg.TimeoutSeconds
 	if timeout == 0 {
@@ -80,6 +136,11 @@ func NewJob(cfg JobConfig) (*batchv1.Job, error) {
 			{Name: "TF_STATE_REGION", Value: cfg.State.Region},
 			{Name: "TF_STATE_KEY", Value: cfg.State.Key},
 			{Name: "TF_IN_AUTOMATION", Value: "true"},
+			{Name: "TF_MODE", Value: cmp.Or(cfg.Mode, ModeApply)},
+			{Name: "TF_PLAN_KEY", Value: cfg.PlanKey},
+			{Name: "TF_RENDERED_PREFIX", Value: cfg.RenderedPrefix},
+			{Name: "TF_RENDERED_METADATA", Value: cfg.RenderedMetadata},
+			{Name: "TF_STOP_AFTER_SECONDS", Value: strconv.Itoa(int(stopAfter(timeout)))},
 		},
 		EnvFrom: []corev1.EnvFromSource{},
 		VolumeMounts: []corev1.VolumeMount{
@@ -103,6 +164,7 @@ func NewJob(cfg JobConfig) (*batchv1.Job, error) {
 			Template: corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
 					RestartPolicy: corev1.RestartPolicyNever, AutomountServiceAccountToken: new(false),
+					TerminationGracePeriodSeconds: new(int64(stopGraceSeconds)),
 					SecurityContext: &corev1.PodSecurityContext{
 						RunAsNonRoot: new(true), RunAsUser: new(runnerUser), RunAsGroup: new(runnerUser), FSGroup: &fsGroup,
 						SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},

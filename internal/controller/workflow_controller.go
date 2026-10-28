@@ -23,6 +23,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -38,6 +39,8 @@ type WorkflowReconciler struct {
 	TerraformRunnerImage string
 	APIReader            client.Reader
 	TerraformState       terraform.StateConfig
+	// Recorder records Events about the Workflows; set by SetupWithManager.
+	Recorder events.EventRecorder
 }
 
 // +kubebuilder:rbac:groups=dinova.one,resources=workflows,verbs=get;list;watch;create;update;patch;delete
@@ -47,9 +50,12 @@ type WorkflowReconciler struct {
 // +kubebuilder:rbac:groups=dinova.one,resources=apicalltemplates,verbs=get;list;watch
 // +kubebuilder:rbac:groups=dinova.one,resources=workflowtemplates,verbs=get;list;watch
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;create
 // +kubebuilder:rbac:groups=dinova.one,resources=terraformtemplates,verbs=get;list;watch
+// +kubebuilder:rbac:groups=apps,resources=controllerrevisions,verbs=get
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;create;update
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
@@ -64,6 +70,7 @@ type WorkflowReconciler struct {
 func (r *WorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	helper := &workflow.Handler{
 		Client: r.Client, Scheme: r.Scheme, TerraformRunnerImage: r.TerraformRunnerImage, APIReader: r.APIReader, TerraformState: r.TerraformState,
+		Recorder: r.Recorder,
 	}
 	return helper.Reconcile(ctx, req)
 }
@@ -71,6 +78,7 @@ func (r *WorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 // SetupWithManager sets up the controller with the Manager.
 func (r *WorkflowReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.APIReader = mgr.GetAPIReader()
+	r.Recorder = mgr.GetEventRecorder("workflow-controller")
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&dinovav1alpha1.Workflow{}).
 		Owns(&dinovav1alpha1.ApiCall{}).

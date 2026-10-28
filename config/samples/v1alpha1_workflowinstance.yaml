@@ -1,0 +1,20 @@
+# Keeps a WorkflowTemplate applied for one client: the operator runs it as a new Workflow at
+# once, again as soon as its code changes (a new revision of one of its TerraformTemplates, or
+# an edit of the WorkflowTemplate or of the parameters), and every interval in between. The
+# template must have Terraform steps only. A full example is
+# terraform-workflow/virtuozzo-vm-instance.yaml.
+apiVersion: dinova.one/v1alpha1
+kind: WorkflowInstance
+metadata:
+  labels:
+    app.kubernetes.io/name: latch
+    app.kubernetes.io/managed-by: kustomize
+  name: workflowinstance-sample
+spec:
+  templateRef:
+    name: virtuozzo-vm
+  parameters:
+    - {name: clientName, value: SAMPLE}
+    - {name: vms, value: '["vm-1"]'}
+  interval: 6h
+  retryInterval: 30m

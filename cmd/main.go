@@ -75,6 +75,7 @@ func main() {
 	var tfStateEndpoint, tfStateBucket, tfStateRegion string
 	var apiCAFile string
 	var apiWorkers, apiQueueSize int
+	var apiMaxResponseBytes int64
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&tfStateEndpoint, "tfstate-s3-endpoint", "",
 		"URL of the S3-compatible storage that holds every Terraform state, for example http://minio.storage:9000. "+
@@ -92,6 +93,8 @@ func main() {
 		"Optional PEM CA bundle to trust for ApiCall HTTPS endpoints, in addition to system roots.")
 	flag.IntVar(&apiWorkers, "apicall-workers", 4, "Maximum concurrent ApiCall HTTP requests (1-64).")
 	flag.IntVar(&apiQueueSize, "apicall-queue-size", 64, "Maximum queued ApiCall operations (1-4096).")
+	flag.Int64Var(&apiMaxResponseBytes, "apicall-max-response-bytes", 4<<20,
+		"Maximum bytes read from an ApiCall response. Only the values a Workflow step reads, at most 64 KiB, are stored.")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -229,8 +232,13 @@ func main() {
 		setupLog.Error(err, "Failed to configure ApiCall TLS trust")
 		os.Exit(1)
 	}
+	if apiMaxResponseBytes < 64<<10 {
+		setupLog.Error(errors.New("must be at least 65536"),
+			"Invalid --apicall-max-response-bytes", "value", apiMaxResponseBytes)
+		os.Exit(1)
+	}
 	callClient, err := apiengine.NewClient(apiengine.Config{
-		HTTPClient: callHTTPClient, Timeout: time.Hour, MaxResponseBytes: 64 << 10,
+		HTTPClient: callHTTPClient, Timeout: time.Hour, MaxResponseBytes: apiMaxResponseBytes,
 	})
 	if err != nil {
 		setupLog.Error(err, "Failed to create ApiCall client")
@@ -273,6 +281,27 @@ func main() {
 		TerraformRunnerImage: controller.TerraformRunnerImage(), TerraformState: stateConfig,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "workflow")
+		os.Exit(1)
+	}
+	if err := (&controller.TerraformTemplateReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "terraformtemplate")
+		os.Exit(1)
+	}
+	if err := (&controller.WorkflowInstanceReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "workflowinstance")
+		os.Exit(1)
+	}
+	if err := (&controller.WorkflowPipelineReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "workflowpipeline")
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder

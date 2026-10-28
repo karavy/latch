@@ -1,0 +1,34 @@
+# Keeps the VMs of the client ACME applied. The operator runs the WorkflowTemplate virtuozzo-vm
+# as a new Workflow (acme-vms-1, acme-vms-2...) at once, again as soon as what it runs changes
+# (a new revision of a TerraformTemplate, an edit of the WorkflowTemplate or of the parameters
+# below, for example the list of VMs), and every interval, which corrects changes made on
+# Virtuozzo by hand. One run at a time; the newest ones are kept as history.
+#
+#   kubectl get workflowinstance acme-vms
+#   kubectl get workflow -l dinova.one/workflow-instance=acme-vms
+#
+# Deleting the instance deletes its runs, not the VMs: the Terraform states stay.
+apiVersion: dinova.one/v1alpha1
+kind: WorkflowInstance
+metadata:
+  labels:
+    app.kubernetes.io/name: latch
+    app.kubernetes.io/component: terraform-workflow
+    dinova.one/client: ACME
+  name: acme-vms
+spec:
+  templateRef:
+    name: virtuozzo-vm
+  parameters:
+    - {name: clientName, value: ACME}
+    - {name: vms, value: '["vm-1","vm-2"]'}
+  interval: 6h
+  # After a failed run, when nothing changed.
+  retryInterval: 30m
+  # Auto: every run plans and applies. Manual: every run only plans; a plan with changes is
+  # shown in status.pendingPlan (condition Drifted) and applied, exactly, once approved:
+  #   kubectl get secret <status.pendingPlan.secret> -o jsonpath='{.data.plan\.txt}' | base64 -d
+  #   kubectl patch workflowinstance acme-vms --type merge -p '{"spec":{"approvePlan":"<status.pendingPlan.id>"}}'
+  # Create the resources with Auto, then switch to Manual: with Manual the first creation
+  # needs an approval for each step (network, then vm).
+  approval: Auto

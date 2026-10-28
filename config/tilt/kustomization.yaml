@@ -8,6 +8,7 @@ resources:
   - workflow-sequence.yaml
   - tfstate-storage.yaml
   - workflow-terraform.yaml
+  - workflow-pipeline.yaml
 patches:
   - target:
       group: apps
@@ -24,7 +25,8 @@ patches:
         value:
           - --leader-elect
           - --health-probe-bind-address=:8081
-          - --apicall-allowed-origins=http://mock-api.apicall-debug.svc.cluster.local:8080
+          - --apicall-allowed-origins=http://mock-api.apicall-debug.svc.cluster.local:8080,https://mock-api.apicall-debug.svc.cluster.local:8443
+          - --apicall-ca-file=/etc/apicall-debug/ca.crt
           - --apicall-allowed-origins-configmap=latch-system/operator-config
           - --tfstate-s3-endpoint=http://minio.tfstate-storage.svc.cluster.local:9000
           - --tfstate-s3-bucket=tfstate
@@ -40,6 +42,14 @@ patches:
           - name: TFSTATE_S3_SECRET_ACCESS_KEY
             valueFrom:
               secretKeyRef: {name: tfstate-operator-credentials, key: TFSTATE_S3_SECRET_ACCESS_KEY}
+      # The test CA of the mock API (hack/mock-api-tls.sh, run by Tilt before the operator): the
+      # operator sends Secret credentials only over HTTPS, so the mock admin portal needs it.
+      - op: add
+        path: /spec/template/spec/containers/0/volumeMounts/-
+        value: {name: apicall-debug-ca, mountPath: /etc/apicall-debug, readOnly: true}
+      - op: add
+        path: /spec/template/spec/volumes/-
+        value: {name: apicall-debug-ca, configMap: {name: apicall-debug-ca}}
   - target:
       group: apps
       version: v1
@@ -50,3 +60,19 @@ patches:
       - op: replace
         path: /spec/template/spec/containers/0/image
         value: latch-mock-api:tilt
+      # HTTPS next to HTTP, with the certificate of hack/mock-api-tls.sh (see cmd/mock-api).
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value: {name: TLS_PORT, value: "8443"}
+      - op: add
+        path: /spec/template/spec/containers/0/ports/-
+        value: {name: https, containerPort: 8443, protocol: TCP}
+  - target:
+      version: v1
+      kind: Service
+      name: mock-api
+      namespace: apicall-debug
+    patch: |-
+      - op: add
+        path: /spec/ports/-
+        value: {name: https, port: 8443, targetPort: https, protocol: TCP}

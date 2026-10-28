@@ -83,6 +83,14 @@ func readyReason(workflow *dinovav1alpha1.Workflow) string {
 	return condition.Reason
 }
 
+func readyMessage(workflow *dinovav1alpha1.Workflow) string {
+	condition := meta.FindStatusCondition(workflow.Status.Conditions, "Ready")
+	if condition == nil {
+		return ""
+	}
+	return condition.Message
+}
+
 var _ = Describe("Workflow poll error tolerance", func() {
 	// pollServer answers /start with an operation id and /poll with replies[n] for the
 	// nth poll (the last reply repeats). A nil reply drops the connection.

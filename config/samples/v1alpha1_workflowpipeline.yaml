@@ -1,0 +1,25 @@
+# A process in stages: a WorkflowInstance for Terraform resources kept applied, then a Workflow
+# that runs once, with an output of the first as a parameter. The complete example, the
+# activation of a Kubernetes cluster, is in newk8scluster/pipeline.yaml.
+apiVersion: dinova.one/v1alpha1
+kind: WorkflowPipeline
+metadata:
+  labels:
+    app.kubernetes.io/name: latch
+    app.kubernetes.io/managed-by: kustomize
+  name: workflowpipeline-sample
+spec:
+  parameters:
+    - {name: clientName, value: ACME}
+  stages:
+    - name: network
+      instance:
+        templateRef: {name: network}
+        interval: 6h
+    - name: firewall
+      dependsOn: [network]
+      parameters:
+        - name: networkId
+          valueFrom: {stage: network, step: network, output: networkId}
+      workflow:
+        templateRef: {name: firewall}

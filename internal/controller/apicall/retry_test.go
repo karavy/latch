@@ -99,6 +99,29 @@ func TestApiCallRunsOutOfAttempts(t *testing.T) {
 	}
 }
 
+func TestApiCallStopsWaitingOnAFailureValue(t *testing.T) {
+	for _, value := range []string{"failed", "waiting_license_decision"} {
+		var hits atomic.Int32
+		server := retryServer(t, &hits, jobStatus("running"), jobStatus(value), jobStatus("success"))
+		call := testAPICall(server.URL, http.MethodGet)
+		call.Spec.Retry = retrying(dinovav1alpha1.ApiCallRetry{
+			MaxAttempts: 10, Until: &dinovav1alpha1.ApiCallCondition{
+				JSONPointer: "/status", EqualsJSON: `"success"`,
+				FailWhenJSON: []string{`"failed"`, `"waiting_license_decision"`},
+			},
+		})
+		r := apiTestReconciler(t, server, call)
+		runUntilDone(t, r, call)
+
+		if call.Status.Phase != apiPhaseFailed || readyReason(call) != "PollFailed" {
+			t.Fatalf("%s: phase %s, reason %s; want Failed, PollFailed", value, call.Status.Phase, readyReason(call))
+		}
+		if hits.Load() != 2 {
+			t.Fatalf("%s: %d requests; want 2, the wait ends at the failure value", value, hits.Load())
+		}
+	}
+}
+
 func TestApiCallRetriesOnlyWhatItWasToldTo(t *testing.T) {
 	for name, test := range map[string]struct {
 		replies  []func(http.ResponseWriter)

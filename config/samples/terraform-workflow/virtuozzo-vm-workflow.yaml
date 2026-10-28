@@ -1,0 +1,25 @@
+# Creates two VMs for the client ACME. A Workflow is immutable and runs once: to run it again, for
+# example after changing the Terraform files or the list of VMs, create a new one with another
+# name and the same clientName. The Terraform states belong to the client, not to the Workflow,
+# so the new Workflow changes the resources of the first one, and deleting a Workflow does not
+# destroy what Terraform created. The label lets you list the runs of a client:
+#   kubectl get workflow -l dinova.one/client=ACME
+apiVersion: dinova.one/v1alpha1
+kind: Workflow
+metadata:
+  labels:
+    app.kubernetes.io/name: latch
+    app.kubernetes.io/component: terraform-workflow
+    dinova.one/client: ACME
+  name: virtuozzo-vm-example
+spec:
+  # Terraform working files (rendered templates, providers) of the templates that have a
+  # Terraform step. The state is not kept here.
+  workspaceStorage: 2Gi
+  templates:
+    - name: vms
+      templateRef:
+        name: virtuozzo-vm
+      parameters:
+        - {name: clientName, value: ACME}
+        - {name: vms, value: '["vm-1","vm-2"]'}

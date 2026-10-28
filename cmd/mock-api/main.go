@@ -53,26 +53,44 @@ func main() {
 		port = defaultPort
 	}
 	store := &requestStore{}
-	server := &http.Server{
-		Addr:              ":" + port,
-		Handler:           newHandler(store),
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      15 * time.Second,
-		IdleTimeout:       60 * time.Second,
+	handler := newHandler(store)
+	newServer := func(port string) *http.Server {
+		return &http.Server{
+			Addr:              ":" + port,
+			Handler:           handler,
+			ReadHeaderTimeout: 5 * time.Second,
+			ReadTimeout:       15 * time.Second,
+			// Long enough for the delay faults of the simulated services (see engine.go).
+			WriteTimeout: 10 * time.Minute,
+			IdleTimeout:  60 * time.Second,
+		}
 	}
+	server := newServer(port)
 	log.Printf("mock API listening on %s", server.Addr)
 	certFile, keyFile := os.Getenv("TLS_CERT_FILE"), os.Getenv("TLS_KEY_FILE")
+	tlsPort := strings.TrimSpace(os.Getenv("TLS_PORT"))
 	var err error
 	if certFile != "" && keyFile != "" {
 		_, certErr := os.Stat(certFile)
 		_, keyErr := os.Stat(keyFile)
-		if errors.Is(certErr, os.ErrNotExist) && errors.Is(keyErr, os.ErrNotExist) {
+		switch {
+		case errors.Is(certErr, os.ErrNotExist) && errors.Is(keyErr, os.ErrNotExist):
 			log.Print("TLS certificate not mounted; serving HTTP for unauthenticated debug requests")
 			err = server.ListenAndServe()
-		} else if certErr != nil || keyErr != nil {
+		case certErr != nil || keyErr != nil:
 			log.Fatalf("TLS certificate or key is unavailable: certificate=%v key=%v", certErr, keyErr)
-		} else {
+		case tlsPort != "":
+			// Both: HTTP on PORT, and HTTPS on TLS_PORT for the requests that carry credentials,
+			// which the operator only sends over HTTPS.
+			secure := newServer(tlsPort)
+			log.Printf("mock API also listening with TLS on %s", secure.Addr)
+			go func() {
+				if err := secure.ListenAndServeTLS(certFile, keyFile); err != nil && !errors.Is(err, http.ErrServerClosed) {
+					log.Fatal(err)
+				}
+			}()
+			err = server.ListenAndServe()
+		default:
 			err = server.ListenAndServeTLS(certFile, keyFile)
 		}
 	} else {
@@ -106,7 +124,25 @@ func newHandler(store *requestStore) http.Handler {
 	mux.HandleFunc("/vdcs", store.createVDC)
 	mux.HandleFunc("/networks", store.createNetwork)
 	mux.HandleFunc("/", store.echo)
+	mountSimulatedServices(mux)
 	return mux
+}
+
+// mountSimulatedServices adds the simulated OpenStack and admin portal, with the /__mock/ control
+// API of their shared engine.
+func mountSimulatedServices(mux *http.ServeMux) *engine {
+	openstack, portal := newOpenStackService(), newPortalService()
+	e := newEngine(openstack, portal)
+	openstack.engine, portal.engine = e, e
+	for prefix, handler := range map[string]http.HandlerFunc{
+		"/identity": openstack.identity, "/compute": openstack.compute, "/network": openstack.network, "/image": openstack.image,
+	} {
+		mux.Handle(prefix, e.serve("openstack", handler))
+		mux.Handle(prefix+"/", e.serve("openstack", handler))
+	}
+	mux.Handle("/portal/api/v1/", e.serve("portal", http.HandlerFunc(portal.serve)))
+	mux.HandleFunc("/__mock/", e.control)
+	return e
 }
 
 func (s *requestStore) echo(w http.ResponseWriter, r *http.Request) {

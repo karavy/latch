@@ -1,0 +1,74 @@
+# The activation of a new Kubernetes cluster for a client (FLUSSO.md), as one WorkflowPipeline.
+# The stages run in the order of their dependencies; those that depend on nothing (vdc and dns)
+# start at once, together:
+#
+#   vdc ──► vsphere-network ──► itop
+#                          └──► fortigate
+#   dns
+#
+# Terraform stages are WorkflowInstances, kept applied; API stages are Workflows that run once.
+# Outputs pass from a stage to the next with valueFrom. The templates are in templates.yaml
+# (placeholders) and in ../google-dns-zone.
+#
+#   kubectl get workflowpipeline acme-k8s
+#   kubectl get workflowpipeline acme-k8s -o jsonpath='{range .status.stages[*]}{.name}{"\t"}{.phase}{"\t"}{.message}{"\n"}{end}'
+#
+# When a Workflow stage is Outdated (a value it used changed) or Failed, run it again by
+# listing its current Workflow (status.stages[].workflow) in spec.rerun:
+#
+#   kubectl patch workflowpipeline acme-k8s --type merge -p '{"spec":{"rerun":["acme-k8s-fortigate-1"]}}'
+#
+# Deleting the pipeline deletes the stages in the opposite order: fortigate and itop, then
+# vsphere-network, then vdc. The instances keep their resources (deletionPolicy Retain).
+apiVersion: dinova.one/v1alpha1
+kind: WorkflowPipeline
+metadata:
+  labels:
+    app.kubernetes.io/name: latch
+    app.kubernetes.io/component: newk8scluster
+    dinova.one/client: acme
+  name: acme-k8s
+spec:
+  # Given to every stage whose template declares them.
+  parameters:
+    - {name: clientName, value: acme}
+  stages:
+    - name: vdc
+      instance:
+        templateRef: {name: newk8s-vdc}
+        interval: 6h
+
+    - name: vsphere-network
+      dependsOn: [vdc]
+      parameters:
+        - name: orgName
+          valueFrom: {stage: vdc, step: vdc, output: orgName}
+      workflow:
+        templateRef: {name: newk8s-vsphere-network}
+
+    - name: itop
+      dependsOn: [vsphere-network]
+      parameters:
+        - name: networkCidr
+          valueFrom: {stage: vsphere-network, step: create-network, output: networkCidr}
+      instance:
+        templateRef: {name: newk8s-itop}
+        interval: 6h
+
+    - name: fortigate
+      dependsOn: [vsphere-network]
+      parameters:
+        - name: networkCidr
+          valueFrom: {stage: vsphere-network, step: create-network, output: networkCidr}
+        - {name: apiServerIP, value: "[address of the API server]"}
+        - {name: clientAllowlist, value: '["203.0.113.10/32"]'}
+      workflow:
+        templateRef: {name: newk8s-fortigate}
+        # rerunOnChange: true   # only once every API step of newk8s-fortigate is idempotent
+
+    - name: dns
+      parameters:
+        - {name: parentZone, value: k8s-test-dinova-services}
+      instance:
+        templateRef: {name: google-dns-zone}
+        interval: 6h

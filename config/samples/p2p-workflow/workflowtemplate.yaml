@@ -377,9 +377,18 @@ spec:
     #     status.attempts): a poll with no templateRef sends the step's own request again. A
     #     delivery is fourteen phases and tens of minutes, so it asks every 30 seconds, up to 100
     #     requests in all (about 50 minutes), and fails with PollTimeout if the job is not done
-    #     by then. A job that ends as "failed" is not recognised as such: the step keeps asking
-    #     until the time is up. Answers that mean "not now" (429, 502, 503, 504, network errors)
+    #     by then. A job whose status is "failed", or that waits for an operator
+    #     (waiting_src_ip, waiting_license_decision), fails the step at once with PollFailed:
+    #     nobody would answer within the poll. Answers that mean "not now" (429, 502, 503, 504, network errors)
     #     do not fail the step; they count as an attempt that was not ready.
+    #     A "failed" job is resumed instead (recover): POST /jobs/{job_id}/retry with
+    #     resume_from_step = last_completed_step + 1, then the wait starts over. It may happen
+    #     again at a later phase (fails at 3, resumes, fails at 6, resumes...) until phase 14. It
+    #     stops when the job fails 3 times in a row without completing a further phase, after 10
+    #     resumes in all, or when the portal asks for a manual review (the automatic rollback to
+    #     the snapshot did not work). Every resume is listed in the step's status.recoveries.
+    #     With last_completed_step 0 the resume is from phase 1, which restarts the delivery from
+    #     scratch on the same job (on vCloud it deletes the VM of the failed attempt first).
     - name: wait-deliver
       api:
         templateRef:
@@ -391,8 +400,23 @@ spec:
           maxAttempts: 100
           conditionJSONPointer: /status
           equalsJSON: '"success"'
+          failWhenJSON: ['"failed"', '"waiting_src_ip"', '"waiting_license_decision"']
           retryOnStatusCodes: [429, 502, 503, 504]
           retryOnTransportErrors: true
+          recover:
+            whenJSON: ['"failed"']
+            unless:
+              - pointer: /manual_review_required
+                equalsJSON: 'true'
+                message: The automatic rollback did not work; the VM is off and needs a manual review
+            progressPointer: /last_completed_step
+            maxRetriesWithoutProgress: 3
+            maxRecoveries: 10
+            templateRef:
+              name: p2p-fortigate-job-retry
+            inputs:
+              - {step: deliver, output: job_id, toPath: job_id}
+              - {fromResponse: /last_completed_step, to: /resume_from_step, add: 1}
         # Read from the last answer, the one with status success.
         outputs:
           - {name: id, from: /id}

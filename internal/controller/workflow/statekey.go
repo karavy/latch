@@ -12,6 +12,9 @@ import (
 // stateKeyPlaceholder matches {{steps.<step>.outputs.<name>}} in a Terraform state key.
 var stateKeyPlaceholder = regexp.MustCompile(`\{\{\s*steps\.([a-z0-9]([-a-z0-9]*[a-z0-9])?)\.outputs\.([a-zA-Z][a-zA-Z0-9_-]*)\s*\}\}`)
 
+// stateKeyParameter matches {{parameters.<name>}} in a Terraform state key.
+var stateKeyParameter = regexp.MustCompile(`\{\{\s*parameters\.([a-zA-Z][a-zA-Z0-9_-]*)\s*\}\}`)
+
 // stateKeyText is what a substituted value may be made of: the same characters a key
 // segment may use, so a value can never add or remove path segments.
 var stateKeyText = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
@@ -26,12 +29,42 @@ func stateKeyReferences(key string) []dinovav1alpha1.WorkflowInput {
 	return references
 }
 
-// renderStateKey replaces every placeholder of key with the published output it names.
-// Values must be a string, number or boolean made of key characters, so the result is
-// always a plain, safe key. Anything left that looks like a placeholder is an error:
-// a typo must not end up as part of a state path.
-func renderStateKey(key string, resolve func(step, output string) ([]byte, error)) (string, error) {
+// stateKeyParameters lists the parameters a state key uses.
+func stateKeyParameters(key string) []string {
+	matches := stateKeyParameter.FindAllStringSubmatch(key, -1)
+	names := make([]string, 0, len(matches))
+	for _, match := range matches {
+		names = append(names, match[1])
+	}
+	return names
+}
+
+// renderStateKey replaces every placeholder of key: a {{parameters.<name>}} with the value the
+// Workflow gave to that parameter, a {{steps.<step>.outputs.<name>}} with the published output it
+// names. Values must be made of key characters (an output also a string, number or boolean), so
+// the result is always a plain, safe key. Anything left that looks like a placeholder is an
+// error: a typo must not end up as part of a state path.
+func renderStateKey(key string, resolve func(step, output string) ([]byte, error), parameters map[string]string) (string, error) {
 	var failure error
+	key = stateKeyParameter.ReplaceAllStringFunc(key, func(placeholder string) string {
+		if failure != nil {
+			return ""
+		}
+		name := stateKeyParameter.FindStringSubmatch(placeholder)[1]
+		text, ok := parameters[name]
+		if !ok {
+			failure = fmt.Errorf("parameter %q is not declared in spec.parameters", name)
+			return ""
+		}
+		if !stateKeyText.MatchString(text) || text == "." || text == ".." {
+			failure = fmt.Errorf("parameter %s has a value that is not allowed in a state key (use letters, digits, '.', '_' and '-')", name)
+			return ""
+		}
+		return text
+	})
+	if failure != nil {
+		return "", failure
+	}
 	rendered := stateKeyPlaceholder.ReplaceAllStringFunc(key, func(placeholder string) string {
 		if failure != nil {
 			return ""
@@ -67,7 +100,7 @@ func renderStateKey(key string, resolve func(step, output string) ([]byte, error
 		return "", failure
 	}
 	if strings.ContainsAny(rendered, "{} ") {
-		return "", fmt.Errorf("state key %q has an unsupported placeholder; use {{steps.<step>.outputs.<name>}}", key)
+		return "", fmt.Errorf("state key %q has an unsupported placeholder; use {{parameters.<name>}} or {{steps.<step>.outputs.<name>}}", key)
 	}
 	return rendered, nil
 }

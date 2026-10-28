@@ -220,6 +220,20 @@ spec:
                   for credentials.
                 maxProperties: 32
                 type: object
+              keepJSONPointers:
+                description: |-
+                  KeepJSONPointers makes status.response keep only the values these JSON Pointers name in
+                  a JSON response, each at its place (see status.response.body), instead of the whole body.
+                  A large response, such as a job with its log, then fits in the status as long as the kept
+                  values do. The pointer of retry.until is always kept. The Workflow sets it to what its
+                  step reads. Empty keeps the whole body, as does a response that is not JSON.
+                items:
+                  maxLength: 512
+                  pattern: ^(/.*)?$
+                  type: string
+                maxItems: 128
+                type: array
+                x-kubernetes-list-type: atomic
               method:
                 description: Method is the HTTP verb. A request is sent once, unless
                   retry says otherwise.
@@ -281,6 +295,17 @@ spec:
                           the field only has to exist.
                         maxLength: 1024
                         type: string
+                      failWhenJSON:
+                        description: |-
+                          FailWhenJSON lists the values of the same field that mean the wait can never end well, as
+                          JSON (for example "failed"). The first response that has one of them fails the ApiCall at
+                          once, instead of waiting for maxAttempts. It needs jsonPointer to exist in the response.
+                        items:
+                          maxLength: 1024
+                          type: string
+                        maxItems: 16
+                        type: array
+                        x-kubernetes-list-type: set
                       jsonPointer:
                         description: JSONPointer points into the response, for example
                           /status.
@@ -408,8 +433,9 @@ spec:
                 properties:
                   body:
                     description: |-
-                      Body is base64-encoded by JSON serialization, preserving arbitrary bytes.
-                      The operator reads at most 64 KiB per response.
+                      Body is base64-encoded by JSON serialization, preserving arbitrary bytes. With
+                      spec.keepJSONPointers it is a JSON document with only the kept values. It holds at most
+                      64 KiB; a response is read up to the operator's --apicall-max-response-bytes.
                     format: byte
                     type: string
                   contentType:
@@ -417,8 +443,10 @@ spec:
                   statusCode:
                     type: integer
                   truncated:
-                    description: Truncated indicates that the response exceeded the
-                      size limit.
+                    description: |-
+                      Truncated indicates that the body is incomplete: the response exceeded the operator's
+                      read limit (the ApiCall fails with ResponseTooLarge), or what was to be kept exceeded
+                      64 KiB (the outcome of the request does not change).
                     type: boolean
                 required:
                 - statusCode

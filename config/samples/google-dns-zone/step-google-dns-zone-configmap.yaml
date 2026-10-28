@@ -1,0 +1,127 @@
+# The Terraform files of the step that creates the Cloud DNS zone of a client and delegates it
+# from its parent zone, one key for each file (see google-dns-zone-terraformtemplate.yaml).
+#
+# The parent zone is a Cloud DNS managed zone that already exists, named by the variable
+# parent_zone (its name in Cloud DNS, for example k8s-test-dinova-services, not its domain). Its
+# domain is read from Cloud DNS, so the zone of the client acme under the parent zone of
+# k8s-test.dinova.services. is acme.k8s-test.dinova.services., named acme-<parent_zone>. In the
+# parent zone the step writes the NS record of the client's domain with the name servers Cloud
+# DNS gave to the new zone: that is the delegation.
+#
+# The ConfigMap is immutable, as the operator requires for Terraform files: nothing can change
+# the code after a run used it. To change a file, create a new ConfigMap and point the
+# TerraformTemplate to it (an immutable ConfigMap can only be deleted, not edited).
+apiVersion: v1
+kind: ConfigMap
+immutable: true
+metadata:
+  labels:
+    app.kubernetes.io/name: latch
+    app.kubernetes.io/component: google-dns-zone
+  name: step-google-dns-zone
+data:
+  # The backend is added by the runner: do not declare one here. The provider reads the service
+  # account key from the environment variable GOOGLE_CREDENTIALS (Secret google-dns-credentials).
+  providers.tf: |
+    terraform {
+      required_version = ">= 1.9.0"
+      required_providers {
+        google = {
+          source  = "hashicorp/google"
+          version = "~> 6.0"
+        }
+      }
+    }
+
+    provider "google" {
+      project = var.project
+    }
+
+  variables.tf: |
+    variable "project" {
+      description = "Google Cloud project of the client's zone."
+      type        = string
+    }
+
+    variable "parent_project" {
+      description = "Google Cloud project of the parent zone. Empty means the same as project."
+      type        = string
+      default     = ""
+    }
+
+    variable "client_name" {
+      description = "Client, the first label of the zone's domain: lowercase letters, digits and -."
+      type        = string
+
+      validation {
+        condition     = can(regex("^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", var.client_name)) && length(var.client_name) <= 63
+        error_message = "client_name must be a DNS label: lowercase letters, digits and -, not at the ends, at most 63 characters."
+      }
+    }
+
+    variable "parent_zone" {
+      description = "Name in Cloud DNS of the existing parent zone, for example k8s-test-dinova-services."
+      type        = string
+    }
+
+    variable "delegation_ttl" {
+      description = "TTL, in seconds, of the NS record of the delegation in the parent zone."
+      type        = number
+      default     = 300
+    }
+
+  zone.tf: |
+    locals {
+      parent_project = coalesce(var.parent_project, var.project)
+      zone_name      = "${var.client_name}-${var.parent_zone}"
+    }
+
+    data "google_dns_managed_zone" "parent" {
+      name    = var.parent_zone
+      project = local.parent_project
+    }
+
+    resource "google_dns_managed_zone" "client" {
+      name        = local.zone_name
+      dns_name    = "${var.client_name}.${data.google_dns_managed_zone.parent.dns_name}"
+      description = "Zone of the client ${var.client_name}, delegated from ${var.parent_zone}. Managed by latch."
+      visibility  = "public"
+      labels = {
+        managed-by = "latch"
+        client     = var.client_name
+      }
+
+      lifecycle {
+        precondition {
+          condition     = length(local.zone_name) <= 63
+          error_message = "The zone name ${local.zone_name} (client_name-parent_zone) is longer than the 63 characters Cloud DNS allows."
+        }
+        precondition {
+          condition     = data.google_dns_managed_zone.parent.visibility == "public"
+          error_message = "The parent zone ${var.parent_zone} is not public: a delegation from it would not be seen on the Internet."
+        }
+      }
+    }
+
+    # The delegation: the client's domain, in the parent zone, points to the new zone's servers.
+    resource "google_dns_record_set" "delegation" {
+      project      = local.parent_project
+      managed_zone = data.google_dns_managed_zone.parent.name
+      name         = google_dns_managed_zone.client.dns_name
+      type         = "NS"
+      ttl          = var.delegation_ttl
+      rrdatas      = google_dns_managed_zone.client.name_servers
+    }
+
+  outputs.tf: |
+    output "zone_name" {
+      value = google_dns_managed_zone.client.name
+    }
+
+    output "dns_name" {
+      value = google_dns_managed_zone.client.dns_name
+    }
+
+    output "name_servers" {
+      value = google_dns_managed_zone.client.name_servers
+    }

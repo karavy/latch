@@ -8,6 +8,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	dinovav1alpha1 "github.com/karavy/latch/api/v1alpha1"
+	"github.com/karavy/latch/internal/controller/terraform"
 )
 
 // templateRun is one WorkflowTemplate of a Workflow, being run or cleaned up. It is the unit
@@ -38,6 +39,39 @@ func (run *templateRun) advance() {
 		return
 	}
 	run.status.CurrentStep++
+}
+
+// stepCount is where CurrentStep ends: one position for each step, or two in a Destroy
+// workflow, which goes over the steps twice (see stepAt).
+func (run *templateRun) stepCount() int {
+	if terraformMode(run.owner) == terraform.ModeDestroy {
+		return 2 * len(run.steps)
+	}
+	return len(run.steps)
+}
+
+// stepAt returns the step at a position of CurrentStep. A Destroy workflow first reads the
+// steps in order, then destroys them from the last to the first.
+func (run *templateRun) stepAt(position int) dinovav1alpha1.WorkflowStep {
+	if position >= len(run.steps) {
+		return run.steps[2*len(run.steps)-1-position]
+	}
+	return run.steps[position]
+}
+
+// reading reports whether a Destroy workflow is in its first pass, reading the outputs of the
+// steps from their states.
+func (run *templateRun) reading() bool {
+	return int(run.status.CurrentStep) < len(run.steps)
+}
+
+// parameterValues returns the parameters of the run by name.
+func (run *templateRun) parameterValues() map[string]string {
+	values := make(map[string]string, len(run.parameters))
+	for _, parameter := range run.parameters {
+		values[parameter.Name] = parameter.Value
+	}
+	return values
 }
 
 // findStep looks a step up by name among the steps and, once the Workflow is being

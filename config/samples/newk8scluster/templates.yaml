@@ -1,0 +1,146 @@
+# Placeholder WorkflowTemplates for the steps of FLUSSO.md that are not written yet. They show
+# the shape of each stage of pipeline.yaml: the parameters it takes and the outputs the later
+# stages read. The TerraformTemplates and ApiCallTemplates they name do not exist yet: a stage
+# that runs one of these templates fails until they do.
+#
+# VDC: resource pool, folder and organization, with Terraform. Kept applied by a
+# WorkflowInstance, so it publishes the name of the organization for the next stages.
+apiVersion: dinova.one/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  labels:
+    app.kubernetes.io/name: latch
+    app.kubernetes.io/component: newk8scluster
+  name: newk8s-vdc
+spec:
+  parameters:
+    - name: clientName
+      description: Client, used in the names of the resource pool, folder and organization.
+  steps:
+    - name: vdc
+      terraform:
+        templateRef:
+          name: newk8s-vdc            # to write: resource pool, folder, organization
+        inputs:
+          - {parameter: clientName, to: /client_name}
+        state:
+          key: newk8s/vdc/{{parameters.clientName}}
+        envFromSecrets: [tfstate-credentials]
+        outputs:
+          - {name: orgName, from: /org_name}
+---
+# vSphere, on the admin portal: firewall, network between the VDC and NSX, import of the
+# network into the IaaS VDC of the firewall, and its connection to port 2 of the FortiGate.
+# API requests that run once: a Workflow stage. They are POSTs, not marked idempotent, so the
+# stage does not run again by itself when its values change: it becomes Outdated.
+apiVersion: dinova.one/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  labels:
+    app.kubernetes.io/name: latch
+    app.kubernetes.io/component: newk8scluster
+  name: newk8s-vsphere-network
+spec:
+  parameters:
+    - name: clientName
+    - name: orgName
+      description: Organization of the VDC, from the vdc stage.
+  steps:
+    - name: create-firewall
+      api:
+        templateRef: {name: newk8s-vsphere-firewall}             # to write
+        inputs:
+          - {parameter: clientName, to: /client_name}
+    - name: create-network
+      api:
+        templateRef: {name: newk8s-vsphere-network}              # to write
+        inputs:
+          - {parameter: orgName, to: /org_name}
+        outputs:
+          - {name: networkCidr, from: /cidr}
+    - name: import-network
+      api:
+        templateRef: {name: newk8s-vsphere-import-network}       # to write
+        inputs:
+          - {step: create-network, output: networkCidr, to: /cidr}
+    - name: connect-fortigate
+      api:
+        templateRef: {name: newk8s-vsphere-connect-fortigate}    # to write: port 2 of the FortiGate
+        inputs:
+          - {step: create-network, output: networkCidr, to: /cidr}
+---
+# iTop: the client's Kubernetes network, with Terraform, from the network created on vSphere.
+apiVersion: dinova.one/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  labels:
+    app.kubernetes.io/name: latch
+    app.kubernetes.io/component: newk8scluster
+  name: newk8s-itop
+spec:
+  parameters:
+    - name: clientName
+    - name: networkCidr
+      description: Network of the client's cluster, from the vsphere-network stage.
+  steps:
+    - name: network
+      terraform:
+        templateRef:
+          name: newk8s-itop           # to write
+        inputs:
+          - {parameter: clientName, to: /client_name}
+          - {parameter: networkCidr, to: /network_cidr}
+        state:
+          key: newk8s/itop/{{parameters.clientName}}
+        envFromSecrets: [tfstate-credentials]
+---
+# FortiGate, on the admin portal: base configuration, port, policy from the cluster to the
+# internet, NAT of 6443 to the API server and of 80/443, allowlist of the client on 6443. If
+# these requests set the configuration (PUT, or a check before creating), mark the steps
+# idempotent and set rerunOnChange on the stage, so that it follows a change of the network.
+apiVersion: dinova.one/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  labels:
+    app.kubernetes.io/name: latch
+    app.kubernetes.io/component: newk8scluster
+  name: newk8s-fortigate
+spec:
+  parameters:
+    - name: clientName
+    - name: networkCidr
+    - name: apiServerIP
+      description: Address of the Kubernetes API server, the target of the NAT of 6443.
+    - name: clientAllowlist
+      description: Addresses of the client allowed on 6443, as a JSON list.
+  steps:
+    - name: base-config
+      api:
+        templateRef: {name: newk8s-fortigate-base}               # to write
+        inputs:
+          - {parameter: clientName, to: /client_name}
+    - name: port
+      api:
+        templateRef: {name: newk8s-fortigate-port}               # to write
+        inputs:
+          - {parameter: networkCidr, to: /cidr}
+    - name: policy-internet
+      api:
+        templateRef: {name: newk8s-fortigate-policy}             # to write
+        inputs:
+          - {parameter: networkCidr, to: /source}
+    - name: nat-apiserver
+      api:
+        templateRef: {name: newk8s-fortigate-nat}                # to write
+        inputs:
+          - {parameter: apiServerIP, to: /target}
+    - name: nat-ingress
+      api:
+        templateRef: {name: newk8s-fortigate-nat-ingress}        # to write
+        inputs:
+          - {parameter: clientName, to: /client_name}
+    - name: allowlist
+      api:
+        templateRef: {name: newk8s-fortigate-allowlist}          # to write
+        inputs:
+          - {parameter: clientAllowlist, to: /addresses, asJSON: true}

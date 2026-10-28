@@ -49,6 +49,48 @@ spec:
           spec:
             description: spec defines the desired state of Workflow
             properties:
+              acceptStateHolds:
+                description: |-
+                  AcceptStateHolds lists the IDs of the holds on Terraform states that someone has checked.
+                  A state is held when resources may exist in the cloud without being in it: its lock was
+                  removed after its runner died (WorkflowReleasedStateLock), or an apply that failed began
+                  to create resources it did not save (WorkflowUnsavedResources). A Terraform step that
+                  applies to a held state fails, with reason StateLockReleased or UnsavedResources, until
+                  the ID of the hold is listed here; plans and destroys still run. Before listing it, find
+                  those resources and import or delete them.
+                items:
+                  maxLength: 128
+                  type: string
+                maxItems: 16
+                type: array
+                x-kubernetes-list-type: set
+              applyPlan:
+                description: ApplyPlan names the saved plan an ApplyPlan workflow
+                  applies.
+                properties:
+                  step:
+                    description: |-
+                      Step is the Terraform step whose plan is applied. The steps before it publish their
+                      outputs from their states; the steps after it are skipped.
+                    maxLength: 40
+                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                    type: string
+                  uid:
+                    maxLength: 64
+                    minLength: 1
+                    type: string
+                  workflow:
+                    description: |-
+                      Workflow and UID identify the Plan workflow that saved the plan. The plan stays in the
+                      state storage after that workflow is deleted.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                required:
+                - step
+                - uid
+                - workflow
+                type: object
               templates:
                 description: |-
                   Templates run strictly in order. A template starts only after the one before it has
@@ -109,6 +151,24 @@ spec:
                 x-kubernetes-list-map-keys:
                 - name
                 x-kubernetes-list-type: map
+              terraformMode:
+                description: |-
+                  TerraformMode says what the Terraform steps do. Apply (the default) plans and applies
+                  each step. Plan only plans: it saves the plan of each step, and stops at the first step
+                  with changes, whose plan an ApplyPlan workflow can then apply; a step without changes
+                  publishes its outputs from its state, so that the next step can be planned. ApplyPlan
+                  applies exactly the saved plan named by applyPlan, and nothing else. Destroy destroys
+                  what the steps manage: it first reads, in order, the outputs of each step from its state
+                  (the later steps may need them for their variables or their state key), then destroys the
+                  steps from the last to the first; a step without a state, or with an empty one, is
+                  skipped, since it has nothing to destroy. Plan, ApplyPlan and Destroy run exactly one
+                  template, with Terraform steps only.
+                enum:
+                - Apply
+                - Plan
+                - ApplyPlan
+                - Destroy
+                type: string
               workspaceStorage:
                 default: 2Gi
                 description: |-
@@ -124,6 +184,12 @@ spec:
             - message: Workflow spec is immutable; create a new workflow to change
                 what it runs
               rule: self == oldSelf
+            - message: applyPlan is set exactly when terraformMode is ApplyPlan
+              rule: (has(self.terraformMode) && self.terraformMode == 'ApplyPlan')
+                == has(self.applyPlan)
+            - message: a Plan, ApplyPlan or Destroy workflow runs exactly one template
+              rule: '!has(self.terraformMode) || self.terraformMode == ''Apply'' ||
+                size(self.templates) == 1'
           status:
             description: status defines the observed state of Workflow
             properties:
@@ -271,10 +337,118 @@ spec:
                                 - Pending
                                 - Running
                                 - Polling
+                                - Recovering
                                 - Succeeded
                                 - Failed
                                 - Unknown
                                 - Skipped
+                                type: string
+                              plan:
+                                description: Plan is what the Terraform step of a
+                                  Plan workflow found.
+                                properties:
+                                  add:
+                                    format: int32
+                                    type: integer
+                                  change:
+                                    format: int32
+                                    type: integer
+                                  destroy:
+                                    format: int32
+                                    type: integer
+                                  hasChanges:
+                                    description: HasChanges is true when the plan
+                                      changes something, even only outputs.
+                                    type: boolean
+                                  secret:
+                                    description: |-
+                                      Secret holds the readable plan, under the key plan.txt. It is a Secret because a plan
+                                      shows the values of the resources.
+                                    type: string
+                                required:
+                                - add
+                                - change
+                                - destroy
+                                - hasChanges
+                                type: object
+                              recoveries:
+                                description: |-
+                                  Recoveries lists, in order, every recover request the step's poll sent (see
+                                  WorkflowPollRecover).
+                                items:
+                                  description: WorkflowStepRecovery records one recovery
+                                    of a polled operation that failed.
+                                  properties:
+                                    apiCallName:
+                                      description: APICallName is the ApiCall of the
+                                        recover request.
+                                      type: string
+                                    failedJSON:
+                                      description: |-
+                                        FailedJSON is the value of the poll's condition field that started the recovery, as
+                                        JSON, for example "failed".
+                                      type: string
+                                    number:
+                                      description: Number counts the recoveries of
+                                        the step, from 1.
+                                      format: int32
+                                      type: integer
+                                    progressJSON:
+                                      description: |-
+                                        ProgressJSON is the value at recover.progressPointer in the failed poll response, as
+                                        JSON, for example 5.
+                                      type: string
+                                    startedAt:
+                                      description: StartedAt is when the recover request
+                                        was created.
+                                      format: date-time
+                                      type: string
+                                  required:
+                                  - apiCallName
+                                  - failedJSON
+                                  - number
+                                  - startedAt
+                                  type: object
+                                maxItems: 50
+                                type: array
+                                x-kubernetes-list-type: atomic
+                              releasedStateLock:
+                                description: |-
+                                  ReleasedStateLock is the lock that a Terraform Job had left on the step's state when it
+                                  died without releasing it, and that the operator removed (see WorkflowReleasedStateLock):
+                                  by this step, or by an earlier run, when the step failed with reason StateLockReleased.
+                                properties:
+                                  created:
+                                    format: date-time
+                                    type: string
+                                  id:
+                                    description: ID, Who and Created are those of
+                                      the lock file.
+                                    type: string
+                                  releasedAt:
+                                    description: ReleasedAt is when the operator removed
+                                      it.
+                                    format: date-time
+                                    type: string
+                                  releasedBy:
+                                    description: ReleasedBy is the Workflow ("<namespace>/<name>")
+                                      whose step removed it.
+                                    type: string
+                                  who:
+                                    type: string
+                                required:
+                                - created
+                                - id
+                                - releasedAt
+                                - who
+                                type: object
+                              renderedFiles:
+                                description: |-
+                                  RenderedFiles is the prefix of the object keys, in the bucket of the state storage, under
+                                  which the Job of a Terraform step stored the files it ran: the .tf files rendered from the
+                                  template, terraform.auto.tfvars.json and a manifest.json that says which run they belong
+                                  to. They are stored before init, so a run that fails keeps them too, and they are never
+                                  deleted by the operator.
                                 type: string
                               sensitiveOutputs:
                                 description: |-
@@ -289,6 +463,48 @@ spec:
                                 description: StateKey is the object key of the step's
                                   Terraform state in the state storage.
                                 type: string
+                              terraformDigest:
+                                type: string
+                              terraformRevision:
+                                description: |-
+                                  TerraformRevision is the revision of the TerraformTemplate a Terraform step ran, and
+                                  TerraformDigest the SHA-256 of its files (see TerraformTemplate status).
+                                format: int64
+                                type: integer
+                              unsavedResources:
+                                description: |-
+                                  UnsavedResources are the resources the step's apply began to create without saving them
+                                  in the state, or, when the step failed with reason UnsavedResources before its Job, those
+                                  an earlier apply left (see WorkflowUnsavedResources).
+                                properties:
+                                  detectedAt:
+                                    format: date-time
+                                    type: string
+                                  id:
+                                    description: ID identifies the record, for acceptStateHolds.
+                                    type: string
+                                  recordedBy:
+                                    description: RecordedBy is the Workflow ("<namespace>/<name>")
+                                      whose step wrote it.
+                                    type: string
+                                  resources:
+                                    description: Resources are the resource addresses,
+                                      as in the Terraform code.
+                                    items:
+                                      type: string
+                                    maxItems: 64
+                                    type: array
+                                    x-kubernetes-list-type: atomic
+                                  who:
+                                    description: Who is the runner that wrote the
+                                      record ("runner@<pod>"), DetectedAt when.
+                                    type: string
+                                required:
+                                - detectedAt
+                                - id
+                                - resources
+                                - who
+                                type: object
                             required:
                             - name
                             - phase
@@ -342,10 +558,118 @@ spec:
                             - Pending
                             - Running
                             - Polling
+                            - Recovering
                             - Succeeded
                             - Failed
                             - Unknown
                             - Skipped
+                            type: string
+                          plan:
+                            description: Plan is what the Terraform step of a Plan
+                              workflow found.
+                            properties:
+                              add:
+                                format: int32
+                                type: integer
+                              change:
+                                format: int32
+                                type: integer
+                              destroy:
+                                format: int32
+                                type: integer
+                              hasChanges:
+                                description: HasChanges is true when the plan changes
+                                  something, even only outputs.
+                                type: boolean
+                              secret:
+                                description: |-
+                                  Secret holds the readable plan, under the key plan.txt. It is a Secret because a plan
+                                  shows the values of the resources.
+                                type: string
+                            required:
+                            - add
+                            - change
+                            - destroy
+                            - hasChanges
+                            type: object
+                          recoveries:
+                            description: |-
+                              Recoveries lists, in order, every recover request the step's poll sent (see
+                              WorkflowPollRecover).
+                            items:
+                              description: WorkflowStepRecovery records one recovery
+                                of a polled operation that failed.
+                              properties:
+                                apiCallName:
+                                  description: APICallName is the ApiCall of the recover
+                                    request.
+                                  type: string
+                                failedJSON:
+                                  description: |-
+                                    FailedJSON is the value of the poll's condition field that started the recovery, as
+                                    JSON, for example "failed".
+                                  type: string
+                                number:
+                                  description: Number counts the recoveries of the
+                                    step, from 1.
+                                  format: int32
+                                  type: integer
+                                progressJSON:
+                                  description: |-
+                                    ProgressJSON is the value at recover.progressPointer in the failed poll response, as
+                                    JSON, for example 5.
+                                  type: string
+                                startedAt:
+                                  description: StartedAt is when the recover request
+                                    was created.
+                                  format: date-time
+                                  type: string
+                              required:
+                              - apiCallName
+                              - failedJSON
+                              - number
+                              - startedAt
+                              type: object
+                            maxItems: 50
+                            type: array
+                            x-kubernetes-list-type: atomic
+                          releasedStateLock:
+                            description: |-
+                              ReleasedStateLock is the lock that a Terraform Job had left on the step's state when it
+                              died without releasing it, and that the operator removed (see WorkflowReleasedStateLock):
+                              by this step, or by an earlier run, when the step failed with reason StateLockReleased.
+                            properties:
+                              created:
+                                format: date-time
+                                type: string
+                              id:
+                                description: ID, Who and Created are those of the
+                                  lock file.
+                                type: string
+                              releasedAt:
+                                description: ReleasedAt is when the operator removed
+                                  it.
+                                format: date-time
+                                type: string
+                              releasedBy:
+                                description: ReleasedBy is the Workflow ("<namespace>/<name>")
+                                  whose step removed it.
+                                type: string
+                              who:
+                                type: string
+                            required:
+                            - created
+                            - id
+                            - releasedAt
+                            - who
+                            type: object
+                          renderedFiles:
+                            description: |-
+                              RenderedFiles is the prefix of the object keys, in the bucket of the state storage, under
+                              which the Job of a Terraform step stored the files it ran: the .tf files rendered from the
+                              template, terraform.auto.tfvars.json and a manifest.json that says which run they belong
+                              to. They are stored before init, so a run that fails keeps them too, and they are never
+                              deleted by the operator.
                             type: string
                           sensitiveOutputs:
                             description: |-
@@ -360,6 +684,48 @@ spec:
                             description: StateKey is the object key of the step's
                               Terraform state in the state storage.
                             type: string
+                          terraformDigest:
+                            type: string
+                          terraformRevision:
+                            description: |-
+                              TerraformRevision is the revision of the TerraformTemplate a Terraform step ran, and
+                              TerraformDigest the SHA-256 of its files (see TerraformTemplate status).
+                            format: int64
+                            type: integer
+                          unsavedResources:
+                            description: |-
+                              UnsavedResources are the resources the step's apply began to create without saving them
+                              in the state, or, when the step failed with reason UnsavedResources before its Job, those
+                              an earlier apply left (see WorkflowUnsavedResources).
+                            properties:
+                              detectedAt:
+                                format: date-time
+                                type: string
+                              id:
+                                description: ID identifies the record, for acceptStateHolds.
+                                type: string
+                              recordedBy:
+                                description: RecordedBy is the Workflow ("<namespace>/<name>")
+                                  whose step wrote it.
+                                type: string
+                              resources:
+                                description: Resources are the resource addresses,
+                                  as in the Terraform code.
+                                items:
+                                  type: string
+                                maxItems: 64
+                                type: array
+                                x-kubernetes-list-type: atomic
+                              who:
+                                description: Who is the runner that wrote the record
+                                  ("runner@<pod>"), DetectedAt when.
+                                type: string
+                            required:
+                            - detectedAt
+                            - id
+                            - resources
+                            - who
+                            type: object
                         required:
                         - name
                         - phase

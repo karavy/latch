@@ -1,0 +1,213 @@
+# The Terraform files of the two Virtuozzo steps, one key for each file. Each step has its own
+# TerraformTemplate and works in its own folder and with its own state, so a file belongs to one
+# step (see virtuozzo-vm-terraformtemplate.yaml), except the provider files, which both read.
+#
+#   network step:  providers.tf, provider-variables.tf, network-variables.tf, network.tf,
+#                  network-outputs.tf
+#   vm step:       providers.tf, provider-variables.tf, vm-variables.tf, compute.tf.tmpl,
+#                  floatingip.tf.tmpl, outputs.tf.tmpl
+#
+# The vm step needs the router and its interface of the network step. The WorkflowTemplate runs
+# it after the network step succeeded, so nothing in the vm files has to wait for them.
+#
+# A VM is created for each element of the list vms, the vm step input /vms (for example
+# ["vm-1","vm-2"]): the *.tf.tmpl files repeat their VM resources with a terraform-engine loop,
+# <FGT_FOR_STR><VMS> ... <FGT_FOR_END>, and <FGT_VMS_VALUE> is the element. The element is also
+# the name of the resources, so it must be unique and use letters, digits, - and _.
+# A loop that is not on the first line of a file is expanded in place, so each file stays one
+# file: the comment on top of floatingip.tf.tmpl and outputs.tf.tmpl is there for that.
+# The other keys are plain .tf files, used as they are.
+#
+# The ConfigMap is immutable, as the operator requires for Terraform files: nothing can change
+# the code after a run used it. To change a file, create a new ConfigMap and point the
+# TerraformTemplates to it (an immutable ConfigMap can only be deleted, not edited).
+apiVersion: v1
+kind: ConfigMap
+immutable: true
+metadata:
+  labels:
+    app.kubernetes.io/name: latch
+    app.kubernetes.io/component: terraform-workflow
+  name: step-virtuozzo-vm
+data:
+  # The backend is added by the runner: do not declare one here.
+  providers.tf: |
+    terraform {
+      required_version = ">= 0.14.0"
+      required_providers {
+        openstack = {
+          source  = "terraform-provider-openstack/openstack"
+          version = "~> 1.53.0"
+        }
+      }
+    }
+
+    provider "openstack" {
+      user_name           = var.os_username
+      tenant_name         = var.os_tenant_name
+      domain_name         = var.os_domain_name
+      password            = var.os_password
+      auth_url            = var.os_auth_url
+      region              = var.os_region
+      insecure            = true
+      user_domain_name    = "Default"
+      project_domain_name = "Default"
+    }
+
+  # Credentials of the provider (providers.tf).
+  provider-variables.tf: |
+    variable "os_username" {
+      type = string
+    }
+
+    variable "os_tenant_name" {
+      type = string
+    }
+
+    variable "os_domain_name" {
+      type = string
+    }
+
+    variable "os_password" {
+      type      = string
+      sensitive = true
+    }
+
+    variable "os_auth_url" {
+      type = string
+    }
+
+    variable "os_region" {
+      type = string
+    }
+
+  # Network step: router towards the external network and its interface on the subnet.
+  network-variables.tf: |
+    variable "external_network" {
+      type = string
+    }
+
+  network.tf: |
+    data "openstack_networking_network_v2" "public" {
+      name = var.external_network
+    }
+
+    resource "openstack_networking_router_v2" "r" {
+      name                = "router-test"
+      external_network_id = data.openstack_networking_network_v2.public.id
+    }
+
+    resource "openstack_networking_router_interface_v2" "ri" {
+      router_id = openstack_networking_router_v2.r.id
+      subnet_id = "a6c3e3aa-f3b3-44da-98ab-1a20411c7234"
+    }
+
+  network-outputs.tf: |
+    output "router_id" {
+      value = openstack_networking_router_v2.r.id
+    }
+
+  # VM step.
+  vm-variables.tf: |
+    variable "image_name" {
+      type = string
+    }
+
+    variable "flavor_name" {
+      type = string
+    }
+
+    variable "network_name" {
+      type = string
+    }
+
+    variable "keypair_name" {
+      type = string
+    }
+
+    variable "secgroup_name" {
+      type    = string
+      default = "default"
+    }
+
+    variable "volume_type" {
+      type    = string
+      default = null
+    }
+
+    variable "volume_size_gb" {
+      type    = number
+      default = 20
+    }
+
+    variable "external_network" {
+      type    = string
+      default = null
+    }
+
+    # The names of the VMs. The *.tf.tmpl files read the same list from the step input /vms (they
+    # are rendered before Terraform runs); the variable is declared so the tfvars file is valid.
+    variable "vms" {
+      type = list(string)
+    }
+
+  compute.tf.tmpl: |
+    data "openstack_images_image_v2" "img" {
+      name        = var.image_name
+      most_recent = true
+    }
+
+    data "openstack_networking_network_v2" "net" {
+      name = var.network_name
+    }
+
+    # One VM for each element of the list vms.
+    <FGT_FOR_STR><VMS>
+    resource "openstack_compute_instance_v2" "<FGT_VMS_VALUE>" {
+      name            = "<FGT_VMS_VALUE>"
+      flavor_name     = var.flavor_name
+      key_pair        = var.keypair_name
+      security_groups = [var.secgroup_name]
+
+      # Avvio da volume: su Virtuozzo è la modalità più affidabile
+      block_device {
+        uuid                  = data.openstack_images_image_v2.img.id
+        source_type           = "image"
+        destination_type      = "volume"
+        boot_index            = 0
+        volume_size           = var.volume_size_gb
+        volume_type           = var.volume_type
+        delete_on_termination = true
+      }
+
+      network {
+        uuid = data.openstack_networking_network_v2.net.id
+      }
+    }
+    <FGT_FOR_END>
+
+  # Optional: public IP (floating IP) for each VM.
+  floatingip.tf.tmpl: |
+    # One floating IP and one association for each VM.
+    <FGT_FOR_STR><VMS>
+    resource "openstack_networking_floatingip_v2" "<FGT_VMS_VALUE>" {
+      count = var.external_network == null ? 0 : 1
+      pool  = var.external_network
+    }
+
+    resource "openstack_compute_floatingip_associate_v2" "<FGT_VMS_VALUE>" {
+      count       = var.external_network == null ? 0 : 1
+      floating_ip = openstack_networking_floatingip_v2.<FGT_VMS_VALUE>[0].address
+      instance_id = openstack_compute_instance_v2.<FGT_VMS_VALUE>.id
+    }
+    <FGT_FOR_END>
+
+  outputs.tf.tmpl: |
+    # The IP of each VM, by name.
+    output "vm_ips" {
+      value = {
+    <FGT_FOR_STR><VMS>
+        "<FGT_VMS_VALUE>" = openstack_compute_instance_v2.<FGT_VMS_VALUE>.access_ip_v4
+    <FGT_FOR_END>
+      }
+    }

@@ -15,6 +15,12 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
+    - jsonPath: .status.revision
+      name: Revision
+      type: integer
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
+      name: Ready
+      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -41,8 +47,7 @@ spec:
           metadata:
             type: object
           spec:
-            description: spec defines the template; it has no status because nothing
-              executes it
+            description: spec defines the template
             properties:
               files:
                 description: |-
@@ -50,13 +55,28 @@ spec:
                   terraform-engine (<FGT_XXX> placeholders and <FGT_FOR_STR> loops) against the
                   step's input variables; plain .tf files are used as they are.
                 items:
-                  description: TerraformFile is one file of a TerraformTemplate.
+                  description: TerraformFile is one file of a TerraformTemplate, read
+                    from a key of an immutable ConfigMap.
                   properties:
-                    content:
-                      description: Content is the file body. Use a YAML block scalar.
-                      maxLength: 262144
-                      minLength: 1
-                      type: string
+                    configMapKeyRef:
+                      description: |-
+                        ConfigMapKeyRef reads the file body from a key of a ConfigMap in the template's
+                        namespace. The ConfigMap must be immutable (immutable: true), so that the code of a
+                        revision can never change: to change it, create a new ConfigMap (or delete and recreate
+                        this one), and the operator makes a new revision.
+                      properties:
+                        key:
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                        name:
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                      required:
+                      - key
+                      - name
+                      type: object
                     name:
                       description: Name is a plain file name (no directories) ending
                         in .tf or .tf.tmpl.
@@ -64,7 +84,7 @@ spec:
                       pattern: ^[A-Za-z0-9][A-Za-z0-9._-]*\.tf(\.tmpl)?$
                       type: string
                   required:
-                  - content
+                  - configMapKeyRef
                   - name
                   type: object
                 maxItems: 32
@@ -73,12 +93,130 @@ spec:
                 x-kubernetes-list-map-keys:
                 - name
                 x-kubernetes-list-type: map
+              revisionHistoryLimit:
+                default: 10
+                description: |-
+                  RevisionHistoryLimit is how many revisions are kept, the current one included. Older
+                  revisions are deleted; a run that used one keeps its own copy of the files.
+                format: int32
+                maximum: 100
+                minimum: 1
+                type: integer
             required:
             - files
+            type: object
+          status:
+            description: status is the current revision of the files
+            properties:
+              conditions:
+                description: |-
+                  Conditions has Ready: True when the current revision matches the spec and its
+                  ConfigMaps, False with the reason when the files cannot be read (a ConfigMap or a key is
+                  missing, or a ConfigMap is not immutable). A Workflow runs a template only when it is
+                  Ready.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              digest:
+                description: Digest is the SHA-256 of the files of the current revision,
+                  as "sha256:<hex>".
+                type: string
+              observedGeneration:
+                description: ObservedGeneration is the generation of the spec this
+                  status describes.
+                format: int64
+                type: integer
+              revision:
+                description: |-
+                  Revision is the number of the current revision. The operator gives a new number every
+                  time the content of the files changes; files with the content of an older revision that
+                  is still kept bring that revision back.
+                format: int64
+                type: integer
+              revisionName:
+                description: RevisionName names the ControllerRevision that holds
+                  the files of the current revision.
+                type: string
+              sources:
+                description: Sources are the ConfigMaps the current revision was read
+                  from.
+                items:
+                  description: TerraformTemplateSource is a ConfigMap a revision was
+                    read from.
+                  properties:
+                    name:
+                      description: Name of the ConfigMap.
+                      type: string
+                    uid:
+                      description: 'UID of the ConfigMap: a ConfigMap deleted and
+                        created again has another one.'
+                      type: string
+                  required:
+                  - name
+                  - uid
+                  type: object
+                type: array
+                x-kubernetes-list-type: atomic
             type: object
         required:
         - spec
         type: object
     served: true
     storage: true
-    subresources: {}
+    subresources:
+      status: {}

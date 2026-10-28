@@ -25,7 +25,7 @@ func TestRenderStateKey(t *testing.T) {
 		"{{steps.create-vdc.outputs.live}}/x":                                     "true/x",
 		"a-{{steps.tf.outputs.net-id}}-b":                                         "a-net.1_a-b-b",
 	} {
-		got, err := renderStateKey(key, resolve(values))
+		got, err := renderStateKey(key, resolve(values), nil)
 		if err != nil || got != want {
 			t.Errorf("renderStateKey(%q) = %q, %v; want %q", key, got, err, want)
 		}
@@ -39,11 +39,11 @@ func TestRenderStateKeyRejectsValuesThatCouldChangeThePath(t *testing.T) {
 	}
 	for _, name := range []string{"slash", "dots", "dot", "space", "empty", "object", "list", "null", "broken", "glob"} {
 		key := "vdc/{{steps.s.outputs." + name + "}}"
-		if got, err := renderStateKey(key, resolve(map[string]string{"s." + name: values["s."+name]})); err == nil {
+		if got, err := renderStateKey(key, resolve(map[string]string{"s." + name: values["s."+name]}), nil); err == nil {
 			t.Errorf("value %q was accepted and rendered %q", values["s."+name], got)
 		}
 	}
-	if _, err := renderStateKey("vdc/{{steps.s.outputs.missing}}", resolve(nil)); err == nil {
+	if _, err := renderStateKey("vdc/{{steps.s.outputs.missing}}", resolve(nil), nil); err == nil {
 		t.Error("an unknown output must be an error")
 	}
 }
@@ -53,7 +53,7 @@ func TestRenderStateKeyRejectsUnsupportedPlaceholders(t *testing.T) {
 		"vdc/{{steps.s.outputs}}", "vdc/{{ .Values.x }}", "vdc/{{steps.S.outputs.x}}",
 		"vdc/{steps.s.outputs.x}", "vdc/{{steps.s.outputs.x", "vdc/ x", "vdc/}}",
 	} {
-		if got, err := renderStateKey(key, resolve(map[string]string{"s.x": `"v"`})); err == nil {
+		if got, err := renderStateKey(key, resolve(map[string]string{"s.x": `"v"`}), nil); err == nil {
 			t.Errorf("%q rendered %q instead of failing", key, got)
 		}
 	}
@@ -66,5 +66,47 @@ func TestStateKeyReferences(t *testing.T) {
 	}
 	if refs := stateKeyReferences("plain/key"); len(refs) != 0 {
 		t.Fatalf("references = %+v", refs)
+	}
+}
+
+func TestRenderStateKeyWithParameters(t *testing.T) {
+	parameters := map[string]string{"clientName": "ACME", "env": "prod-1.a_b"}
+	values := map[string]string{"s.x": `"v"`}
+	for key, want := range map[string]string{
+		"vm/{{parameters.clientName}}/network":                  "vm/ACME/network",
+		"vm/{{ parameters.clientName }}/{{parameters.env}}":     "vm/ACME/prod-1.a_b",
+		"{{parameters.clientName}}/{{steps.s.outputs.x}}/state": "ACME/v/state",
+		"a-{{parameters.env}}-b":                                "a-prod-1.a_b-b",
+	} {
+		got, err := renderStateKey(key, resolve(values), parameters)
+		if err != nil || got != want {
+			t.Errorf("renderStateKey(%q) = %q, %v; want %q", key, got, err, want)
+		}
+	}
+}
+
+func TestRenderStateKeyRejectsParametersThatCouldChangeThePath(t *testing.T) {
+	for _, value := range []string{"a/b", "..", ".", "a b", "", "a*", "{{x}}"} {
+		if got, err := renderStateKey("vm/{{parameters.p}}", resolve(nil), map[string]string{"p": value}); err == nil {
+			t.Errorf("value %q was accepted and rendered %q", value, got)
+		}
+	}
+	if _, err := renderStateKey("vm/{{parameters.missing}}", resolve(nil), map[string]string{"p": "x"}); err == nil {
+		t.Error("an undeclared parameter must be an error")
+	}
+	for _, key := range []string{"vm/{{parameters}}", "vm/{{parameters.}}", "vm/{{Parameters.p}}", "vm/{{parameters.p"} {
+		if got, err := renderStateKey(key, resolve(nil), map[string]string{"p": "x"}); err == nil {
+			t.Errorf("%q rendered %q instead of failing", key, got)
+		}
+	}
+}
+
+func TestStateKeyParameters(t *testing.T) {
+	names := stateKeyParameters("vm/{{parameters.a}}/{{ parameters.b-c }}/{{steps.s.outputs.x}}")
+	if len(names) != 2 || names[0] != "a" || names[1] != "b-c" {
+		t.Fatalf("parameters = %v", names)
+	}
+	if names := stateKeyParameters("plain/key"); len(names) != 0 {
+		t.Fatalf("parameters = %v", names)
 	}
 }

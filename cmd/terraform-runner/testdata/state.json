@@ -1,0 +1,6 @@
+{"version":4,"resources":[
+{"mode":"managed","type":"openstack_compute_instance_v2","name":"vm","instances":[{"index_key":"a"}]},
+{"mode":"managed","type":"openstack_compute_instance_v2","name":"tainted","instances":[{"status":"tainted"}]},
+{"mode":"managed","type":"openstack_networking_floatingip_v2","name":"other","instances":[{"index_key":0},{"index_key":1}]},
+{"module":"module.net","mode":"managed","type":"openstack_networking_network_v2","name":"n","instances":[{}]},
+{"mode":"data","type":"openstack_networking_network_v2","name":"public","instances":[{}]}]}

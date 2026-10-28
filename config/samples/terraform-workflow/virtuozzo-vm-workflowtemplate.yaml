@@ -1,0 +1,63 @@
+# Creates the VMs of a Virtuozzo project with two Terraform steps, one after the other: network
+# (the router and its interface), then vm (the VMs). The Terraform files are in
+# virtuozzo-vm-terraformtemplate.yaml, the credentials and the other variables in the Secret
+# virtuozzo-credentials (see step-virtuozzo-vm-secret.yaml).
+#
+# Steps run strictly in order: vm starts only after network succeeded. Each step has its own
+# state, in its own folder of the state storage, and works in its own folder of the workspace, so
+# a later run changes only the step whose resources changed.
+#
+# The states belong to the client, not to the Workflow: every Workflow that gives the same
+# clientName works on the same resources. To run again after changing the Terraform files or the
+# list of VMs, create a new Workflow (another name, same clientName): Terraform compares the new
+# files with the state of the client and changes only the difference. The WorkflowInstance
+# acme-vms (virtuozzo-vm-instance.yaml) does that by itself: it runs the template again when
+# its code changes and every interval.
+apiVersion: dinova.one/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  labels:
+    app.kubernetes.io/name: latch
+    app.kubernetes.io/component: terraform-workflow
+  name: virtuozzo-vm
+spec:
+  parameters:
+    - name: clientName
+      description: >-
+        Client the resources belong to: part of the state key, so the same value means the same
+        resources. Letters, digits, . _ and - only. No default: the Workflow must give it.
+    - name: vms
+      description: >-
+        VM names as a JSON array of strings, for example ["vm-1","vm-2"]. Each must be unique, with
+        only letters, digits, - and _. No default: the Workflow must give it.
+  steps:
+    - name: network
+      terraform:
+        templateRef:
+          name: virtuozzo-network
+        # The state is the object <namespace>/virtuozzo-vm/<clientName>/network/terraform.tfstate.
+        state:
+          key: virtuozzo-vm/{{parameters.clientName}}/network/terraform
+        # tfstate-credentials: AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY of the state storage.
+        # virtuozzo-credentials: the TF_VAR_ variables of the Terraform files.
+        envFromSecrets: [tfstate-credentials, virtuozzo-credentials]
+        timeoutSeconds: 1800
+        outputs:
+          - {name: routerId, from: /router_id}
+    - name: vm
+      terraform:
+        templateRef:
+          name: virtuozzo-vm
+        # A parameter is always a string: asJSON reads it as JSON, so Terraform gets the list.
+        inputs:
+          - {parameter: vms, to: /vms, asJSON: true}
+        # The state is the object <namespace>/virtuozzo-vm/<clientName>/vm/terraform.tfstate. A
+        # later run with another list of VMs adds the new ones and destroys the ones that are no
+        # longer there.
+        state:
+          key: virtuozzo-vm/{{parameters.clientName}}/vm/terraform
+        envFromSecrets: [tfstate-credentials, virtuozzo-credentials]
+        timeoutSeconds: 1800
+        # One object {"<name of the VM>": "<its IP>"}.
+        outputs:
+          - {name: vmIps, from: /vm_ips}

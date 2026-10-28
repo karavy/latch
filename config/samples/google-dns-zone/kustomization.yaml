@@ -1,0 +1,16 @@
+# Kept apart from config/samples/kustomization.yaml: apply it on its own with
+#   kubectl apply -k config/samples/google-dns-zone/
+# then create the Workflow, after setting its parentZone, with
+#   kubectl create -f config/samples/google-dns-zone/google-dns-zone-workflow.yaml
+#
+# The Workflow also needs, in its namespace, the Secret tfstate-credentials (AWS_ACCESS_KEY_ID and
+# AWS_SECRET_ACCESS_KEY of the state storage) and the Secret google-dns-credentials, which is
+# not here because it holds a service account key:
+#   kubectl create secret generic google-dns-credentials \
+#     --from-file=GOOGLE_CREDENTIALS=<service account key>.json \
+#     --from-literal=TF_VAR_project=<project of the client zones> \
+#     --from-literal=TF_VAR_parent_project=<project of the parent zone, if another one>
+resources:
+  - step-google-dns-zone-configmap.yaml
+  - google-dns-zone-terraformtemplate.yaml
+  - google-dns-zone-workflowtemplate.yaml

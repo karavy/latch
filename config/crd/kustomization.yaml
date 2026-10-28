@@ -8,6 +8,8 @@ resources:
 - bases/dinova.one_terraformtemplates.yaml
 - bases/dinova.one_workflowtemplates.yaml
 - bases/dinova.one_workflows.yaml
+- bases/dinova.one_workflowinstances.yaml
+- bases/dinova.one_workflowpipelines.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

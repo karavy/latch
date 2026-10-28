@@ -15,8 +15,9 @@ import (
 var fileName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*\.tf(\.tmpl)?$`)
 
 // ConfigMapData returns the files of a TerraformTemplate keyed by file name, ready to be
-// stored in the ConfigMap that the Job mounts as its template directory.
-func ConfigMapData(template *dinovav1alpha1.TerraformTemplate) (map[string]string, error) {
+// stored in the ConfigMap that the Job mounts as its template directory. Each file is read with
+// lookup, and the error of the lookup is returned as it is.
+func ConfigMapData(template *dinovav1alpha1.TerraformTemplate, lookup func(dinovav1alpha1.WorkflowConfigMapKeyReference) (string, error)) (map[string]string, error) {
 	if len(template.Spec.Files) == 0 {
 		return nil, fmt.Errorf("TerraformTemplate %q has no files", template.Name)
 	}
@@ -28,10 +29,14 @@ func ConfigMapData(template *dinovav1alpha1.TerraformTemplate) (map[string]strin
 		if _, duplicate := data[file.Name]; duplicate {
 			return nil, fmt.Errorf("TerraformTemplate %q repeats file %q", template.Name, file.Name)
 		}
-		if file.Content == "" {
+		content, err := lookup(file.ConfigMapKeyRef)
+		if err != nil {
+			return nil, err
+		}
+		if content == "" {
 			return nil, fmt.Errorf("TerraformTemplate %q has an empty file %q", template.Name, file.Name)
 		}
-		data[file.Name] = file.Content
+		data[file.Name] = content
 	}
 	return data, nil
 }

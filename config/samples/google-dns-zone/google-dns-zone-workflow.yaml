@@ -1,0 +1,23 @@
+# Creates acme.<domain of the parent zone> and its delegation. Set parentZone to the Cloud DNS
+# name of the real parent zone of k8s-test.dinova.services:
+#   gcloud dns managed-zones list --filter="dnsName=k8s-test.dinova.services."
+# A Workflow runs once: to run again, create a new one with another name and the same
+# parameters. The result is in the step's outputs:
+#   kubectl get workflow google-dns-zone-acme -o jsonpath='{.status.templates[0].steps[0].outputs}'
+apiVersion: dinova.one/v1alpha1
+kind: Workflow
+metadata:
+  labels:
+    app.kubernetes.io/name: latch
+    app.kubernetes.io/component: google-dns-zone
+    dinova.one/client: acme
+  name: google-dns-zone-acme
+spec:
+  workspaceStorage: 1Gi
+  templates:
+    - name: zone
+      templateRef:
+        name: google-dns-zone
+      parameters:
+        - {name: clientName, value: acme}
+        - {name: parentZone, value: k8s-test-dinova-services}

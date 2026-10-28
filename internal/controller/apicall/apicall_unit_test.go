@@ -29,6 +29,13 @@ import (
 
 func apiTestReconciler(t *testing.T, server *httptest.Server, objects ...client.Object) *Handler {
 	t.Helper()
+	return apiTestReconcilerReading(t, server, apiResponseLimit, objects...)
+}
+
+// apiTestReconcilerReading reads responses up to maxResponseBytes, like
+// --apicall-max-response-bytes.
+func apiTestReconcilerReading(t *testing.T, server *httptest.Server, maxResponseBytes int64, objects ...client.Object) *Handler {
+	t.Helper()
 	scheme := runtime.NewScheme()
 	if err := dinovav1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
@@ -38,7 +45,7 @@ func apiTestReconciler(t *testing.T, server *httptest.Server, objects ...client.
 	}
 	httpClient := server.Client()
 	httpClient.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
-	apiClient, err := apiengine.NewClient(apiengine.Config{HTTPClient: httpClient, Timeout: time.Hour, MaxResponseBytes: apiResponseLimit})
+	apiClient, err := apiengine.NewClient(apiengine.Config{HTTPClient: httpClient, Timeout: time.Hour, MaxResponseBytes: maxResponseBytes})
 	if err != nil {
 		t.Fatal(err)
 	}

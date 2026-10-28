@@ -1,0 +1,13 @@
+# Kept apart from config/samples/kustomization.yaml: apply it on its own with
+#   kubectl apply -k config/samples/terraform-workflow/
+# It keeps the VMs applied with the WorkflowInstance acme-vms. virtuozzo-vm-workflow.yaml is a
+# single run of the same template, left out so that the two do not run on the same state at
+# once: create it by hand with kubectl create -f.
+# The Workflow also needs the Secret tfstate-credentials (AWS_ACCESS_KEY_ID and
+# AWS_SECRET_ACCESS_KEY of the state storage) in its namespace.
+resources:
+  - step-virtuozzo-vm-configmap.yaml
+  - step-virtuozzo-vm-secret.yaml
+  - virtuozzo-vm-terraformtemplate.yaml
+  - virtuozzo-vm-workflowtemplate.yaml
+  - virtuozzo-vm-instance.yaml

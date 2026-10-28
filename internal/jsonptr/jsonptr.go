@@ -74,3 +74,52 @@ func Segments(pointer string) ([]string, error) {
 	}
 	return segments, nil
 }
+
+// Keep returns a document with only the values the pointers name, each at its place: objects
+// keep only the keys on the path of a pointer, and arrays keep their length, with null at the
+// indexes no pointer goes through, so that every kept value is found by the same pointer as
+// before. A pointer that names nothing in the document is ignored, and an empty one keeps the
+// whole document.
+func Keep(document any, pointers []string) (any, error) {
+	var kept any
+	for _, pointer := range pointers {
+		segments, err := Segments(pointer)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := Get(document, pointer); err != nil {
+			continue
+		}
+		if len(segments) == 0 {
+			return document, nil
+		}
+		kept = keepPath(kept, document, segments)
+	}
+	return kept, nil
+}
+
+// keepPath copies into kept the value at segments of source, which exists, creating the
+// containers on its path that kept does not have yet.
+func keepPath(kept, source any, segments []string) any {
+	if len(segments) == 0 {
+		return source
+	}
+	switch current := source.(type) {
+	case map[string]any:
+		object, ok := kept.(map[string]any)
+		if !ok {
+			object = map[string]any{}
+		}
+		object[segments[0]] = keepPath(object[segments[0]], current[segments[0]], segments[1:])
+		return object
+	case []any:
+		array, ok := kept.([]any)
+		if !ok {
+			array = make([]any, len(current))
+		}
+		index, _ := strconv.Atoi(segments[0]) // Get has checked it
+		array[index] = keepPath(array[index], current[index], segments[1:])
+		return array
+	}
+	return source
+}

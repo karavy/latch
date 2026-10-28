@@ -236,12 +236,22 @@ func applyInputs(destination []byte, inputs []dinovav1alpha1.WorkflowInput, reso
 		if err := json.Unmarshal(raw, &value); err != nil {
 			return nil, fmt.Errorf("%s is not valid JSON", describeInput(input))
 		}
-		if input.AsNumber {
+		if input.AsJSON {
+			if input.AsNumber || input.AsString {
+				return nil, fmt.Errorf("%s: asJSON cannot be combined with asString or asNumber", describeInput(input))
+			}
+			parsed, err := asJSON(value)
+			if err != nil {
+				return nil, fmt.Errorf("%s: %w", describeInput(input), err)
+			}
+			value = parsed
+		}
+		if input.AsNumber || input.Add != 0 {
 			number, err := asNumber(value)
 			if err != nil {
 				return nil, fmt.Errorf("%s: %w", describeInput(input), err)
 			}
-			value = number
+			value = number + float64(input.Add)
 		}
 		if input.AsString {
 			text, err := asText(value)
@@ -358,11 +368,13 @@ func validateReferences(steps []dinovav1alpha1.WorkflowStep) error {
 				if err := check(i, selectReferences(step.API.Poll.Outputs), false, nil); err != nil {
 					return err
 				}
-				initial := map[string]bool{}
-				for _, output := range step.API.Outputs {
-					initial[output.Name] = true
-				}
+				initial := outputNames(step.API.Outputs)
 				if err := check(i, step.API.Poll.Inputs, true, initial); err != nil {
+					return err
+				}
+				// A poll without templateRef reads the step's outputs from its final response,
+				// so they are not published yet when the operation is recovered.
+				if err := check(i, recoverInputs(step.API.Poll), separatePoll(step.API), initial); err != nil {
 					return err
 				}
 			}
@@ -381,6 +393,23 @@ func validateReferences(steps []dinovav1alpha1.WorkflowStep) error {
 		}
 	}
 	return nil
+}
+
+// outputNames returns the names of the outputs, as a set.
+func outputNames(outputs []dinovav1alpha1.WorkflowOutput) map[string]bool {
+	names := make(map[string]bool, len(outputs))
+	for _, output := range outputs {
+		names[output.Name] = true
+	}
+	return names
+}
+
+// recoverInputs returns the inputs of the poll's recover request, if it has one.
+func recoverInputs(poll *dinovav1alpha1.WorkflowPoll) []dinovav1alpha1.WorkflowInput {
+	if poll.Recover == nil {
+		return nil
+	}
+	return poll.Recover.Inputs
 }
 
 // stepOutputs returns every output a step publishes: its own and its poll's.
@@ -499,11 +528,12 @@ func (r *Handler) outputResolver(ctx context.Context, run *templateRun) func(ste
 		if state == nil {
 			return nil, fmt.Errorf("%w: step %q has no recorded outputs", errOutputNotPublished, step)
 		}
-		if value, ok := state.Outputs[output]; ok {
-			return []byte(value), nil
-		}
-		if !slices.Contains(state.SensitiveOutputs, output) {
+		value, sensitive, found := publishedOutput(state, output)
+		switch {
+		case !found:
 			return nil, fmt.Errorf("%w: output %q of step %q", errOutputNotPublished, output, step)
+		case !sensitive:
+			return value, nil
 		}
 		if secret == nil {
 			secret = &corev1.Secret{}
@@ -522,6 +552,35 @@ func (r *Handler) outputResolver(ctx context.Context, run *templateRun) func(ste
 	}
 }
 
+// publishedOutput returns an output a step published, as the JSON a later step reads: the
+// value of a non-sensitive output, or sensitive when the value lives in the outputs Secret.
+func publishedOutput(state *dinovav1alpha1.WorkflowStepStatus, output string) (value []byte, sensitive, found bool) {
+	if value, ok := state.Outputs[output]; ok {
+		return []byte(value), false, true
+	}
+	if slices.Contains(state.SensitiveOutputs, output) {
+		return nil, true, true
+	}
+	return nil, false, false
+}
+
+// StepOutput returns an output published by a step of a template of a Workflow, as a later
+// step of that Workflow would read it (see publishedOutput); found is false when the step did
+// not publish it. The value of a sensitive output is not read: it stays in the outputs Secret.
+func StepOutput(workflow *dinovav1alpha1.Workflow, template, step, output string) (value []byte, sensitive, found bool) {
+	for i := range workflow.Status.Templates {
+		if workflow.Status.Templates[i].Name != template {
+			continue
+		}
+		for j := range workflow.Status.Templates[i].Steps {
+			if state := &workflow.Status.Templates[i].Steps[j]; state.Name == step {
+				return publishedOutput(state, output)
+			}
+		}
+	}
+	return nil, false, false
+}
+
 // configMapLookup reads the ConfigMap values a select compares against. Each ConfigMap is
 // read at most once per lookup. A missing ConfigMap or key fails the workflow, because
 // retrying cannot make it appear within this reconcile.
@@ -533,7 +592,7 @@ func (r *Handler) configMapLookup(ctx context.Context, namespace string) configM
 			configMap = &corev1.ConfigMap{}
 			err := r.reader().Get(ctx, types.NamespacedName{Namespace: namespace, Name: ref.Name}, configMap)
 			if apierrors.IsNotFound(err) {
-				return "", &outputFailure{"ConfigMapUnavailable", fmt.Sprintf("ConfigMap %q used by an output select was not found", ref.Name)}
+				return "", &outputFailure{"ConfigMapUnavailable", fmt.Sprintf("ConfigMap %q was not found", ref.Name)}
 			}
 			if err != nil {
 				return "", err
@@ -554,6 +613,8 @@ func describeInput(input dinovav1alpha1.WorkflowInput) string {
 		return "parameter " + input.Parameter
 	case input.ConfigMapKeyRef != nil:
 		return fmt.Sprintf("ConfigMap value %s/%s", input.ConfigMapKeyRef.Name, input.ConfigMapKeyRef.Key)
+	case input.FromResponse != "":
+		return "response value " + input.FromResponse
 	}
 	return fmt.Sprintf("output %s.%s", input.Step, input.Output)
 }
@@ -572,6 +633,7 @@ func validateParameters(spec dinovav1alpha1.WorkflowTemplateSpec) error {
 			inputs = append(inputs, step.API.Inputs...)
 			if step.API.Poll != nil {
 				inputs = append(inputs, step.API.Poll.Inputs...)
+				inputs = append(inputs, recoverInputs(step.API.Poll)...)
 			}
 		case step.Terraform != nil:
 			inputs = append(inputs, step.Terraform.Inputs...)
@@ -579,6 +641,13 @@ func validateParameters(spec dinovav1alpha1.WorkflowTemplateSpec) error {
 		for _, input := range inputs {
 			if input.Parameter != "" && !declared[input.Parameter] {
 				return fmt.Errorf("step %q reads parameter %q, which the template does not declare", step.Name, input.Parameter)
+			}
+		}
+		if step.Terraform != nil {
+			for _, name := range stateKeyParameters(step.Terraform.State.Key) {
+				if !declared[name] {
+					return fmt.Errorf("step %q uses parameter %q in its state key, and the template does not declare it", step.Name, name)
+				}
 			}
 		}
 		for _, name := range selectParameters(step) {
@@ -609,8 +678,29 @@ func (r *Handler) inputResolver(ctx context.Context, run *templateRun) inputReso
 				return nil, err
 			}
 			return json.Marshal(value)
+		case input.FromResponse != "":
+			return nil, fmt.Errorf("%s: only the inputs of a poll's recover request can read a response", describeInput(input))
 		}
 		return outputs(input.Step, input.Output)
+	}
+}
+
+// responseResolver resolves the inputs that read the given response with fromResponse, and
+// passes the others to resolve.
+func responseResolver(response []byte, resolve inputResolver) inputResolver {
+	return func(input dinovav1alpha1.WorkflowInput) ([]byte, error) {
+		if input.FromResponse == "" {
+			return resolve(input)
+		}
+		var document any
+		if err := json.Unmarshal(response, &document); err != nil {
+			return nil, &outputFailure{"ResponseInvalid", "The response read by the recover request is not valid JSON"}
+		}
+		value, err := getPointer(document, input.FromResponse)
+		if err != nil {
+			return nil, &outputFailure{"ResponseValueMissing", fmt.Sprintf("The response read by the recover request has nothing at %s", input.FromResponse)}
+		}
+		return json.Marshal(value)
 	}
 }
 
@@ -805,4 +895,19 @@ func asNumber(value any) (float64, error) {
 		return number, nil
 	}
 	return 0, errors.New("asNumber needs a number or a string that holds one")
+}
+
+// asJSON returns what a string holds as JSON: an array, an object or any other JSON value. It is
+// for an input that must set a list or an object into the body, when the value comes from a
+// parameter, which is always a string.
+func asJSON(value any) (any, error) {
+	text, ok := value.(string)
+	if !ok {
+		return nil, errors.New("asJSON needs a string that holds JSON")
+	}
+	var parsed any
+	if err := json.Unmarshal([]byte(text), &parsed); err != nil {
+		return nil, fmt.Errorf("asJSON needs valid JSON, and %q is not: %w", text, err)
+	}
+	return parsed, nil
 }

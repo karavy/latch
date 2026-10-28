@@ -28,3 +28,6 @@ go.work
 
 # Kubeconfig might contain secrets
 *.kubeconfig
+
+# Google service account key of the google-dns-zone sample: never commit it
+config/samples/google-dns-zone/google-dns-credentials.yaml

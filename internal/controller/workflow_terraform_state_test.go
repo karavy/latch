@@ -96,12 +96,7 @@ var _ = Describe("Workflow Terraform state and outputs", func() {
 		DeferCleanup(server.Close)
 		createTemplates(map[string]dinovav1alpha1.ApiCallTemplateSpec{"state-create-vdc": {Method: http.MethodPost, Endpoint: server.URL + "/vdcs"}})
 		for _, name := range []string{"state-net", "state-cluster"} {
-			template := &dinovav1alpha1.TerraformTemplate{
-				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
-				Spec:       dinovav1alpha1.TerraformTemplateSpec{Files: []dinovav1alpha1.TerraformFile{{Name: "main.tf", Content: `terraform {}`}}},
-			}
-			Expect(k8sClient.Create(ctx, template)).To(Succeed())
-			DeferCleanup(func() { Expect(k8sClient.Delete(ctx, template)).To(Succeed()) })
+			createTerraformTemplate(name, map[string]string{"main.tf": `terraform {}`})
 		}
 
 		states := &fakeStateReader{}
@@ -219,12 +214,7 @@ var _ = Describe("Workflow Terraform state and outputs", func() {
 	})
 
 	It("fails clearly when the state storage is not configured or a state is missing", func() {
-		template := &dinovav1alpha1.TerraformTemplate{
-			ObjectMeta: metav1.ObjectMeta{Name: "state-fail-tpl", Namespace: "default"},
-			Spec:       dinovav1alpha1.TerraformTemplateSpec{Files: []dinovav1alpha1.TerraformFile{{Name: "main.tf", Content: "terraform {}"}}},
-		}
-		Expect(k8sClient.Create(ctx, template)).To(Succeed())
-		DeferCleanup(func() { Expect(k8sClient.Delete(ctx, template)).To(Succeed()) })
+		template := createTerraformTemplate("state-fail-tpl", map[string]string{"main.tf": "terraform {}"})
 
 		run := func(name, stateKey string, config terraform.StateConfig, outputs []dinovav1alpha1.WorkflowOutput) (*dinovav1alpha1.Workflow, *batchv1.Job) {
 			createWorkflowFor(&dinovav1alpha1.WorkflowTemplate{
@@ -248,10 +238,13 @@ var _ = Describe("Workflow Terraform state and outputs", func() {
 			reconcileOnce() // initializes the status
 			reconcileOnce() // starts the template
 			current := reconcileOnce()
-			claim := &corev1.PersistentVolumeClaim{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: stage(current).WorkspacePVCName}, claim)).To(Succeed())
-			claim.Status.Phase = corev1.ClaimBound
-			Expect(k8sClient.Status().Update(ctx, claim)).To(Succeed())
+			// The claim exists only when a Job was going to run.
+			if claimName := stage(current).WorkspacePVCName; claimName != "" {
+				claim := &corev1.PersistentVolumeClaim{}
+				Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: claimName}, claim)).To(Succeed())
+				claim.Status.Phase = corev1.ClaimBound
+				Expect(k8sClient.Status().Update(ctx, claim)).To(Succeed())
+			}
 			current = reconcileOnce()
 			jobs := &batchv1.JobList{}
 			Expect(k8sClient.List(ctx, jobs, client.InNamespace("default"), client.MatchingLabels{"dinova.one/workflow": name})).To(Succeed())
@@ -281,12 +274,7 @@ var _ = Describe("Workflow Terraform state and outputs", func() {
 	It("starts the Terraform job while the workspace claim is still Pending", func() {
 		// Storage classes with WaitForFirstConsumer (Kind's default) bind a volume only when a
 		// pod uses it: waiting for Bound before creating the Job would wait forever.
-		template := &dinovav1alpha1.TerraformTemplate{
-			ObjectMeta: metav1.ObjectMeta{Name: "pending-claim-tpl", Namespace: "default"},
-			Spec:       dinovav1alpha1.TerraformTemplateSpec{Files: []dinovav1alpha1.TerraformFile{{Name: "main.tf", Content: "terraform {}"}}},
-		}
-		Expect(k8sClient.Create(ctx, template)).To(Succeed())
-		DeferCleanup(func() { Expect(k8sClient.Delete(ctx, template)).To(Succeed()) })
+		template := createTerraformTemplate("pending-claim-tpl", map[string]string{"main.tf": "terraform {}"})
 		workflow := createWorkflowFor(&dinovav1alpha1.WorkflowTemplate{
 			ObjectMeta: metav1.ObjectMeta{Name: "terraform-pending-claim", Namespace: "default"},
 			Spec: dinovav1alpha1.WorkflowTemplateSpec{Steps: []dinovav1alpha1.WorkflowStep{{

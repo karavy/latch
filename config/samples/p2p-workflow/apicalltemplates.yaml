@@ -250,6 +250,31 @@ metadata:
   labels:
     app.kubernetes.io/name: latch
     app.kubernetes.io/component: p2p-workflow
+  name: p2p-fortigate-job-retry
+spec:
+  method: POST
+  # Resumes a failed delivery. {job_id} and resume_from_step are set by the recover of the
+  # wait-deliver step: resume_from_step is the first phase to run, at most
+  # last_completed_step + 1. The job keeps its id.
+  endpoint: https://dev-portal.admin.dinova.cloud:8453/api/v1/fortigate-vm/jobs/{job_id}/retry
+  timeoutSeconds: 120
+  headers:
+    Accept: application/json
+    Content-Type: application/json
+  body: '{"resume_from_step": 0}'
+  authentication:
+    type: APIKey
+    headerName: X-API-Key
+    tokenSecretRef:
+      name: portal-api-key
+      key: api-key
+---
+apiVersion: dinova.one/v1alpha1
+kind: ApiCallTemplate
+metadata:
+  labels:
+    app.kubernetes.io/name: latch
+    app.kubernetes.io/component: p2p-workflow
   name: p2p-vcloud-storage-profiles
 spec:
   method: GET

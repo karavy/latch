@@ -1,0 +1,24 @@
+# Deletes the zone of acme and its delegation, created by google-dns-zone-workflow.yaml: same
+# template and same parameters, so the same state, with terraformMode: Destroy. The NS record
+# in the parent zone goes too, since it is in the same state.
+#   kubectl create -f config/samples/google-dns-zone/google-dns-zone-destroy.yaml
+# Cloud DNS refuses to delete a zone that still has records other than its own NS and SOA:
+# records added by hand, outside Terraform, must be removed first.
+apiVersion: dinova.one/v1alpha1
+kind: Workflow
+metadata:
+  labels:
+    app.kubernetes.io/name: latch
+    app.kubernetes.io/component: google-dns-zone
+    dinova.one/client: acme
+  name: google-dns-zone-acme-destroy
+spec:
+  terraformMode: Destroy
+  workspaceStorage: 1Gi
+  templates:
+    - name: zone
+      templateRef:
+        name: google-dns-zone
+      parameters:
+        - {name: clientName, value: acme}
+        - {name: parentZone, value: k8s-test-dinova-services}

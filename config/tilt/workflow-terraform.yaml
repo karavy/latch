@@ -2,6 +2,33 @@
 # gives the Terraform variables and the key of the Terraform state. Running the workflow
 # again with another VDC name would use another state; the same name would modify the
 # resource that already exists.
+# The Terraform files: an immutable ConfigMap, as the operator requires. Changing them means
+# creating the ConfigMap again; the operator then makes a new revision of the template.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tilt-vdc-record-files
+  namespace: default
+immutable: true
+data:
+  main.tf: |
+    variable "vdc_id" {
+      type = string
+    }
+    variable "vdc_name" {
+      type = string
+    }
+    resource "terraform_data" "vdc" {
+      input = "${var.vdc_name}:${var.vdc_id}"
+    }
+    output "record" {
+      value = terraform_data.vdc.output
+    }
+    output "admin_token" {
+      value     = "token-for-${var.vdc_name}"
+      sensitive = true
+    }
+---
 apiVersion: dinova.one/v1alpha1
 kind: TerraformTemplate
 metadata:
@@ -10,23 +37,7 @@ metadata:
 spec:
   files:
     - name: main.tf
-      content: |
-        variable "vdc_id" {
-          type = string
-        }
-        variable "vdc_name" {
-          type = string
-        }
-        resource "terraform_data" "vdc" {
-          input = "${var.vdc_name}:${var.vdc_id}"
-        }
-        output "record" {
-          value = terraform_data.vdc.output
-        }
-        output "admin_token" {
-          value     = "token-for-${var.vdc_name}"
-          sensitive = true
-        }
+      configMapKeyRef: {name: tilt-vdc-record-files, key: main.tf}
 ---
 apiVersion: dinova.one/v1alpha1
 kind: WorkflowTemplate

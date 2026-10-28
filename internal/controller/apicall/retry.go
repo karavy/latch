@@ -69,6 +69,30 @@ func conditionMet(condition *dinovav1alpha1.ApiCallCondition, body []byte) (bool
 	return reflect.DeepEqual(actual, expected), nil
 }
 
+// conditionFailed reports whether a JSON response has one of the values that end the wait as a
+// failure, and which one. A response that cannot be read is not a failure here: conditionMet
+// already reports it.
+func conditionFailed(condition *dinovav1alpha1.ApiCallCondition, body []byte) (string, bool) {
+	if len(condition.FailWhenJSON) == 0 {
+		return "", false
+	}
+	var document any
+	if err := json.Unmarshal(body, &document); err != nil {
+		return "", false
+	}
+	actual, err := jsonptr.Get(document, condition.JSONPointer)
+	if err != nil {
+		return "", false
+	}
+	for _, candidate := range condition.FailWhenJSON {
+		var failed any
+		if json.Unmarshal([]byte(candidate), &failed) == nil && reflect.DeepEqual(actual, failed) {
+			return candidate, true
+		}
+	}
+	return "", false
+}
+
 // verdict is what the ApiCall does after an attempt.
 type verdict struct {
 	again   bool   // send the request again, after the interval
@@ -91,7 +115,11 @@ func judge(retry *dinovav1alpha1.ApiCallRetry, attempts int32, result apiResult)
 			return verdict{reason: "ConditionInvalid", message: "Cannot check retry.until: " + err.Error()}
 		case met:
 			return verdict{success: true, reason: result.Reason, message: result.Message}
-		case exhausted:
+		}
+		if value, failed := conditionFailed(retry.Until, bodyOf(result)); failed {
+			return verdict{reason: "PollFailed", message: fmt.Sprintf("The response has %s at %s, which ends the wait", value, retry.Until.JSONPointer)}
+		}
+		if exhausted {
 			return verdict{reason: "PollTimeout", message: fmt.Sprintf("The response did not satisfy retry.until in %d attempts", attempts)}
 		}
 		return verdict{again: true, reason: "WaitingForCondition", message: fmt.Sprintf("Attempt %d of %d: the response does not satisfy retry.until yet", attempts, retryMaxAttempts(retry))}
@@ -114,4 +142,17 @@ func bodyOf(result apiResult) []byte {
 		return nil
 	}
 	return result.Response.Body
+}
+
+// keptPointers returns the JSON Pointers whose values the status keeps from a response: the
+// spec's, and the one retry.until reads. Nil keeps the whole body.
+func keptPointers(spec *dinovav1alpha1.ApiCallSpec) []string {
+	if len(spec.KeepJSONPointers) == 0 {
+		return nil
+	}
+	keep := spec.KeepJSONPointers
+	if spec.Retry != nil && spec.Retry.Until != nil {
+		keep = append(slices.Clone(keep), spec.Retry.Until.JSONPointer)
+	}
+	return keep
 }

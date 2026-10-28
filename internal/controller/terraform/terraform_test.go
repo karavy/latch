@@ -1,6 +1,7 @@
 package terraform
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -19,32 +20,72 @@ func templateWith(files ...dinovav1alpha1.TerraformFile) *dinovav1alpha1.Terrafo
 	return template
 }
 
-func TestConfigMapDataKeepsFilesByName(t *testing.T) {
-	data, err := ConfigMapData(templateWith(
-		dinovav1alpha1.TerraformFile{Name: "main.tf.tmpl", Content: `value = "<FGT_VDCID>"`},
-		dinovav1alpha1.TerraformFile{Name: "providers.tf", Content: "terraform {}"},
-	))
-	if err != nil {
-		t.Fatal(err)
+// file is a TerraformFile read from key of the ConfigMap tf-files.
+func file(name, key string) dinovav1alpha1.TerraformFile {
+	return dinovav1alpha1.TerraformFile{Name: name, ConfigMapKeyRef: dinovav1alpha1.WorkflowConfigMapKeyReference{Name: "tf-files", Key: key}}
+}
+
+// lookupIn reads the keys of the ConfigMap tf-files from contents.
+func lookupIn(contents map[string]string) func(dinovav1alpha1.WorkflowConfigMapKeyReference) (string, error) {
+	return func(ref dinovav1alpha1.WorkflowConfigMapKeyReference) (string, error) {
+		content, ok := contents[ref.Key]
+		if ref.Name != "tf-files" || !ok {
+			return "", errors.New("not found")
+		}
+		return content, nil
 	}
-	if len(data) != 2 || data["main.tf.tmpl"] != `value = "<FGT_VDCID>"` || data["providers.tf"] != "terraform {}" {
-		t.Fatalf("unexpected data: %v", data)
+}
+
+func TestConfigMapDataReadsFilesFromConfigMaps(t *testing.T) {
+	lookup := lookupIn(map[string]string{"main": `value = "<FGT_VDCID>"`, "providers": "terraform {}", "empty": ""})
+	data, err := ConfigMapData(templateWith(file("main.tf.tmpl", "main"), file("providers.tf", "providers")), lookup)
+	if err != nil || len(data) != 2 || data["main.tf.tmpl"] != `value = "<FGT_VDCID>"` || data["providers.tf"] != "terraform {}" {
+		t.Fatalf("data %v, error %v", data, err)
+	}
+	for name, file := range map[string]dinovav1alpha1.TerraformFile{
+		"lookup fails":     file("a.tf", "other"),
+		"the key is empty": file("a.tf", "empty"),
+	} {
+		if _, err := ConfigMapData(templateWith(file), lookup); err == nil {
+			t.Errorf("%s: expected an error", name)
+		}
 	}
 }
 
 func TestConfigMapDataRejectsUnsafeTemplates(t *testing.T) {
+	lookup := lookupIn(map[string]string{"x": "x", "y": "y"})
 	for name, template := range map[string]*dinovav1alpha1.TerraformTemplate{
 		"no files":        templateWith(),
-		"path traversal":  templateWith(dinovav1alpha1.TerraformFile{Name: "../main.tf", Content: "x"}),
-		"subdirectory":    templateWith(dinovav1alpha1.TerraformFile{Name: "modules/main.tf", Content: "x"}),
-		"hidden file":     templateWith(dinovav1alpha1.TerraformFile{Name: ".main.tf", Content: "x"}),
-		"not terraform":   templateWith(dinovav1alpha1.TerraformFile{Name: "script.sh", Content: "x"}),
-		"state file name": templateWith(dinovav1alpha1.TerraformFile{Name: "terraform.tfstate", Content: "x"}),
-		"duplicate":       templateWith(dinovav1alpha1.TerraformFile{Name: "a.tf", Content: "x"}, dinovav1alpha1.TerraformFile{Name: "a.tf", Content: "y"}),
-		"empty content":   templateWith(dinovav1alpha1.TerraformFile{Name: "a.tf"}),
+		"path traversal":  templateWith(file("../main.tf", "x")),
+		"subdirectory":    templateWith(file("modules/main.tf", "x")),
+		"hidden file":     templateWith(file(".main.tf", "x")),
+		"not terraform":   templateWith(file("script.sh", "x")),
+		"state file name": templateWith(file("terraform.tfstate", "x")),
+		"duplicate":       templateWith(file("a.tf", "x"), file("a.tf", "y")),
 	} {
-		if _, err := ConfigMapData(template); err == nil {
+		if _, err := ConfigMapData(template, lookup); err == nil {
 			t.Errorf("%s: expected an error", name)
+		}
+	}
+}
+
+func TestDigestDependsOnNamesAndContentOnly(t *testing.T) {
+	files := map[string]string{"main.tf": "a", "vars.tf": "b"}
+	digest := Digest(files)
+	if !strings.HasPrefix(digest, "sha256:") || len(digest) != len("sha256:")+64 {
+		t.Fatalf("digest %q", digest)
+	}
+	if Digest(map[string]string{"vars.tf": "b", "main.tf": "a"}) != digest {
+		t.Error("the digest must not depend on the order of the files")
+	}
+	for name, other := range map[string]map[string]string{
+		"content changed": {"main.tf": "a", "vars.tf": "c"},
+		"file renamed":    {"main.tf": "a", "other.tf": "b"},
+		"file added":      {"main.tf": "a", "vars.tf": "b", "x.tf": "x"},
+		"bytes moved":     {"main.tf": "ab", "vars.tf": ""},
+	} {
+		if Digest(other) == digest {
+			t.Errorf("%s: same digest", name)
 		}
 	}
 }
@@ -54,6 +95,7 @@ func TestNewJobIsIsolatedAndWiredToItsInputs(t *testing.T) {
 		Namespace: "ns", Name: "job", StepName: "network", State: testState(), RunnerImage: "runner:test", WorkspacePVC: "pvc",
 		TemplateConfigMap: "files", InputSecret: "vars", TimeoutSeconds: 60,
 		EnvFromSecrets: []string{"cloud-credentials"},
+		RenderedPrefix: RenderedPrefix("ns", "wf", "uid-1", "tpl", "network"), RenderedMetadata: `{"step":"network"}`,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -99,6 +141,7 @@ func TestNewJobIsIsolatedAndWiredToItsInputs(t *testing.T) {
 	for name, want := range map[string]string{
 		"TF_STATE_ENDPOINT": "http://minio.storage:9000", "TF_STATE_BUCKET": "tfstate",
 		"TF_STATE_REGION": "us-east-1", "TF_STATE_KEY": "default/vdc/acme.tfstate",
+		"TF_RENDERED_PREFIX": "ns/rendered/wf-uid-1/tpl/network/", "TF_RENDERED_METADATA": `{"step":"network"}`,
 	} {
 		if env[name] != want {
 			t.Errorf("%s = %q, want %q", name, env[name], want)
@@ -119,6 +162,27 @@ func TestNewJobDefaultsAndRequiresARunnerImage(t *testing.T) {
 	}
 	if _, err := NewJob(JobConfig{}); err == nil {
 		t.Fatal("a missing runner image must be an error")
+	}
+}
+
+func TestNewJobStopsOpenTofuBeforeItsDeadline(t *testing.T) {
+	for timeout, want := range map[int32]string{1800: "1680", 300: "225", 60: "45"} {
+		job, err := NewJob(JobConfig{RunnerImage: "runner:test", StepName: "apply", State: testState(), TimeoutSeconds: timeout})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got string
+		for _, env := range job.Spec.Template.Spec.Containers[0].Env {
+			if env.Name == "TF_STOP_AFTER_SECONDS" {
+				got = env.Value
+			}
+		}
+		if got != want {
+			t.Errorf("timeout %d: TF_STOP_AFTER_SECONDS = %q, want %q", timeout, got, want)
+		}
+		if grace := job.Spec.Template.Spec.TerminationGracePeriodSeconds; grace == nil || *grace != 120 {
+			t.Errorf("termination grace = %v, want 120", grace)
+		}
 	}
 }
 

@@ -112,6 +112,13 @@ type WorkflowAPIStep struct {
 	// The requests of a poll are not affected.
 	// +optional
 	Debug bool `json:"debug,omitempty"`
+	// Idempotent declares that sending the step's requests again gives the same result, for
+	// example a PUT that sets a configuration, or a create that first checks whether the object
+	// exists. It changes nothing in a Workflow; a WorkflowPipeline runs a Workflow stage again
+	// when its values change (rerunOnChange) only if all its API steps are GETs or idempotent.
+	// The operator cannot check it: a step marked idempotent that is not may create duplicates.
+	// +optional
+	Idempotent bool `json:"idempotent,omitempty"`
 	// Expect lists conditions on the response of the initial request. If one does not hold,
 	// the workflow fails, and the request is not retried. They are checked before the outputs
 	// are published, and not on the responses of a poll.
@@ -216,6 +223,15 @@ type WorkflowPoll struct {
 	// +kubebuilder:validation:MaxLength=1024
 	// +optional
 	EqualsJSON string `json:"equalsJSON,omitempty"`
+	// FailWhenJSON lists values of the condition's field, as JSON (for example "failed"), that
+	// mean the polled operation ended badly or needs somebody to act. The first poll response
+	// that has one of them fails the workflow with PollFailed, instead of waiting for
+	// maxAttempts.
+	// +kubebuilder:validation:MaxItems=16
+	// +kubebuilder:validation:items:MaxLength=1024
+	// +listType=set
+	// +optional
+	FailWhenJSON []string `json:"failWhenJSON,omitempty"`
 	// RetryOnStatusCodes lists HTTP statuses of a poll response (for example 404 or 503)
 	// that mean "not ready yet" instead of a failure. Such a poll consumes one of
 	// maxAttempts. Any other non-2xx status fails the workflow. It never applies to
@@ -230,6 +246,59 @@ type WorkflowPoll struct {
 	// level as "not ready yet". Invalid requests and oversized responses still fail.
 	// +optional
 	RetryOnTransportErrors bool `json:"retryOnTransportErrors,omitempty"`
+	// Recover resumes the polled operation instead of failing the step, when a poll response
+	// has one of the values in recover.whenJSON: it sends the recover request, then polls
+	// again from the start, with a full maxAttempts. It may happen again and again, as long as
+	// the operation makes progress, for example a job that fails at phase 3 of 10, resumes, fails
+	// at phase 6, resumes again, and so on until it succeeds.
+	// +optional
+	Recover *WorkflowPollRecover `json:"recover,omitempty"`
+}
+
+// WorkflowPollRecover defines the request that resumes a polled operation that failed, and
+// how many times it may be sent.
+type WorkflowPollRecover struct {
+	// WhenJSON lists the values of the poll's condition field, as JSON (for example "failed"),
+	// that are worth a recovery. Each one must also be in failWhenJSON; the other values there
+	// still fail the step at once.
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=16
+	// +kubebuilder:validation:items:MaxLength=1024
+	WhenJSON []string `json:"whenJSON"`
+	// Unless lists conditions on the failed poll response that rule a recovery out, for
+	// example a job that asks for a manual review. The first one that holds fails the step
+	// with RecoveryBlocked and its message.
+	// +kubebuilder:validation:MaxItems=16
+	// +optional
+	Unless []WorkflowExpectation `json:"unless,omitempty"`
+	// TemplateRef names the ApiCallTemplate of the recover request. It is sent once per
+	// recovery, never repeated, because it usually restarts work (a POST).
+	TemplateRef WorkflowResourceReference `json:"templateRef"`
+	// Inputs set values into the recover request. Besides parameters, ConfigMaps and outputs
+	// of earlier steps (and of this step's initial request), they may read the failed poll
+	// response with fromResponse, for example the last phase the operation completed.
+	// +kubebuilder:validation:MaxItems=32
+	// +optional
+	Inputs []WorkflowInput `json:"inputs,omitempty"`
+	// ProgressPointer is a JSON Pointer to a number in the poll response that grows as the
+	// operation goes on, for example /last_completed_step. A recovery after which it has grown
+	// starts a new count of maxRetriesWithoutProgress. Without it, every recovery counts.
+	// +kubebuilder:validation:Pattern=`^/.*$`
+	// +kubebuilder:validation:MaxLength=512
+	// +optional
+	ProgressPointer string `json:"progressPointer,omitempty"`
+	// MaxRetriesWithoutProgress is how many recoveries in a row may find the operation failed
+	// at the same point. One more failure there fails the step with RecoveryExhausted.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:default=3
+	// +optional
+	MaxRetriesWithoutProgress int32 `json:"maxRetriesWithoutProgress,omitempty"`
+	// MaxRecoveries bounds the recoveries of the step in all, progress or not.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=50
+	// +kubebuilder:default=10
+	// +optional
+	MaxRecoveries int32 `json:"maxRecoveries,omitempty"`
 }
 
 // WorkflowTerraformState identifies the Terraform state of a step.
@@ -240,8 +309,10 @@ type WorkflowTerraformState struct {
 	// the same key do not overlap: the second one fails on the state lock.
 	//
 	// Segments are separated by "/" and use letters, digits, ".", "_" and "-". A segment can
-	// contain placeholders {{steps.<step>.outputs.<name>}} that are replaced by the output of
-	// an earlier step, which must be a string, number or boolean made of the same characters.
+	// contain placeholders {{parameters.<name>}}, replaced by the value the Workflow gives to
+	// that parameter (so that every Workflow of one client or project works on the same state),
+	// and {{steps.<step>.outputs.<name>}}, replaced by the output of an earlier step, which must
+	// be a string, number or boolean. Both must be made of the same characters as a segment.
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=512
 	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9._{}/ -]+$`
@@ -358,14 +429,16 @@ type WorkflowConfigMapKeyReference struct {
 
 // WorkflowInput sets a value into the request of a step: into a JSON object body (To) or
 // into the query string of the endpoint (ToQuery) or into its path (ToPath). The value comes from exactly one source:
-// an output of an earlier step (Step and Output), a Workflow parameter (Parameter), or a
-// key of a ConfigMap (ConfigMapKeyRef).
+// an output of an earlier step (Step and Output), a Workflow parameter (Parameter), a
+// key of a ConfigMap (ConfigMapKeyRef), or the failed poll response of a recovery
+// (FromResponse).
 // +kubebuilder:validation:XValidation:rule="(has(self.to) ? 1 : 0) + (has(self.toQuery) ? 1 : 0) + (has(self.toPath) ? 1 : 0) == 1",message="exactly one of to, toQuery or toPath must be set"
 // +kubebuilder:validation:XValidation:rule="!has(self.asString) || has(self.to)",message="asString only applies to an input set into the body with to"
 // +kubebuilder:validation:XValidation:rule="!has(self.asNumber) || has(self.to)",message="asNumber only applies to an input set into the body with to"
 // +kubebuilder:validation:XValidation:rule="!has(self.asString) || !has(self.asNumber)",message="asString and asNumber cannot be used together"
 // +kubebuilder:validation:XValidation:rule="has(self.step) == has(self.output)",message="step and output must be set together"
-// +kubebuilder:validation:XValidation:rule="(has(self.output) ? 1 : 0) + (has(self.parameter) ? 1 : 0) + (has(self.configMapKeyRef) ? 1 : 0) == 1",message="exactly one of step and output, parameter, or configMapKeyRef must be set"
+// +kubebuilder:validation:XValidation:rule="(has(self.output) ? 1 : 0) + (has(self.parameter) ? 1 : 0) + (has(self.configMapKeyRef) ? 1 : 0) + (has(self.fromResponse) ? 1 : 0) == 1",message="exactly one of step and output, parameter, configMapKeyRef or fromResponse must be set"
+// +kubebuilder:validation:XValidation:rule="!has(self.add) || has(self.to)",message="add only applies to an input set into the body with to"
 type WorkflowInput struct {
 	// Step is the name of the step that publishes the output. It must come before the
 	// current step (a poll may also use outputs of its own step's initial request).
@@ -387,6 +460,17 @@ type WorkflowInput struct {
 	// step starts.
 	// +optional
 	ConfigMapKeyRef *WorkflowConfigMapKeyReference `json:"configMapKeyRef,omitempty"`
+	// FromResponse is a JSON Pointer into the poll response that failed, for example
+	// /last_completed_step. Only the inputs of a poll's recover request can use it.
+	// +kubebuilder:validation:Pattern=`^/.*$`
+	// +kubebuilder:validation:MaxLength=512
+	// +optional
+	FromResponse string `json:"fromResponse,omitempty"`
+	// Add adds a whole number to a numeric value before it is set into the body, for example
+	// 1 to turn the last completed phase into the first one to run. The value must be a number,
+	// or a string that holds one.
+	// +optional
+	Add int32 `json:"add,omitempty"`
 	// To is a non-root JSON Pointer into the target object, for example /vdcId.
 	// +kubebuilder:validation:Pattern=`^/.+$`
 	// +kubebuilder:validation:MaxLength=512
@@ -402,6 +486,13 @@ type WorkflowInput struct {
 	// must hold one; anything else is refused. Without it the value keeps its JSON type.
 	// +optional
 	AsNumber bool `json:"asNumber,omitempty"`
+	// AsJSON reads a string value as JSON and sets what it holds into the body, for example the
+	// parameter '["vm-1","vm-2"]' as an array, for a body that wants a list or an object, which a
+	// parameter, always a string, cannot be. The string must be valid JSON, and any other value is
+	// refused. It cannot be combined with asString or asNumber. Without it the value keeps its
+	// JSON type.
+	// +optional
+	AsJSON bool `json:"asJSON,omitempty"`
 	// ToQuery is the name of a query parameter of the endpoint to set, for example
 	// block_id. It replaces a parameter of the same name in the template's endpoint, and
 	// the value must be a string, number or boolean. Only API steps support it.
