@@ -44,7 +44,14 @@ func filesConfigMap(name string, files map[string]string) *corev1.ConfigMap {
 // running operator does after any change of the template or of its ConfigMaps.
 func reconcileTerraformTemplate(name string) *dinovav1alpha1.TerraformTemplate {
 	GinkgoHelper()
-	reconciler := &TerraformTemplateReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+	return reconcileTerraformTemplateAllowing(name, false)
+}
+
+// reconcileTerraformTemplateAllowing is reconcileTerraformTemplate with an operator started
+// with or without --allow-mutable-terraform-sources.
+func reconcileTerraformTemplateAllowing(name string, allowMutableSources bool) *dinovav1alpha1.TerraformTemplate {
+	GinkgoHelper()
+	reconciler := &TerraformTemplateReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), AllowMutableSources: allowMutableSources}
 	key := types.NamespacedName{Namespace: "default", Name: name}
 	_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 	Expect(err).NotTo(HaveOccurred())
@@ -171,6 +178,55 @@ var _ = Describe("TerraformTemplate Controller", func() {
 				Expect(k8sClient.Create(ctx, filesConfigMap("tf-not-ready-files", map[string]string{"main.tf": "terraform {}"}))).To(Succeed())
 			}
 		}
+	})
+
+	It("reads mutable ConfigMaps only when both the template and the operator allow it", func() {
+		source := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: "tf-mutable-files", Namespace: "default"},
+			Data:       map[string]string{"main.tf": "# 1"},
+		}
+		Expect(k8sClient.Create(ctx, source)).To(Succeed())
+		DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, source))).To(Succeed()) })
+		template := &dinovav1alpha1.TerraformTemplate{
+			ObjectMeta: metav1.ObjectMeta{Name: "tf-mutable", Namespace: "default"},
+			Spec: dinovav1alpha1.TerraformTemplateSpec{
+				Files:               []dinovav1alpha1.TerraformFile{{Name: "main.tf", ConfigMapKeyRef: dinovav1alpha1.WorkflowConfigMapKeyReference{Name: source.Name, Key: "main.tf"}}},
+				AllowMutableSources: true,
+			},
+		}
+		Expect(k8sClient.Create(ctx, template)).To(Succeed())
+		DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, template))).To(Succeed()) })
+
+		By("refusing it while the operator does not allow mutable sources")
+		template = reconcileTerraformTemplateAllowing("tf-mutable", false)
+		Expect(templateReady(template).Status).To(Equal(metav1.ConditionFalse))
+		Expect(templateReady(template).Reason).To(Equal("MutableSourcesDisabled"))
+		Expect(templateReady(template).Message).To(ContainSubstring("--allow-mutable-terraform-sources"))
+
+		By("making a revision, marked as read from a mutable source, when it does")
+		template = reconcileTerraformTemplateAllowing("tf-mutable", true)
+		Expect(templateReady(template).Status).To(Equal(metav1.ConditionTrue))
+		Expect(templateReady(template).Message).To(ContainSubstring(`ConfigMaps "tf-mutable-files" are mutable`))
+		Expect(template.Status.Revision).To(BeEquivalentTo(1))
+		Expect(template.Status.Sources).To(ConsistOf(HaveField("Mutable", BeTrue())))
+		first := template.Status.RevisionName
+
+		By("making a new revision when the ConfigMap is edited in place")
+		source.Data["main.tf"] = "# 2"
+		Expect(k8sClient.Update(ctx, source)).To(Succeed())
+		template = reconcileTerraformTemplateAllowing("tf-mutable", true)
+		Expect(template.Status.Revision).To(BeEquivalentTo(2))
+		revision := &appsv1.ControllerRevision{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: template.Status.RevisionName}, revision)).To(Succeed())
+		Expect(terraform.RevisionFiles(revision)).To(Equal(map[string]string{"main.tf": "# 2"}))
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: first}, revision)).To(Succeed(), "the revision of the old content is kept")
+
+		By("refusing it again when the template stops asking for mutable sources")
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(template), template)).To(Succeed())
+		template.Spec.AllowMutableSources = false
+		Expect(k8sClient.Update(ctx, template)).To(Succeed())
+		template = reconcileTerraformTemplateAllowing("tf-mutable", true)
+		Expect(templateReady(template).Reason).To(Equal("ConfigMapNotImmutable"))
 	})
 
 	It("validates TerraformTemplate files in the generated CRD", func() {

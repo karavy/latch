@@ -40,6 +40,9 @@ type TerraformTemplateReconciler struct {
 	Scheme *runtime.Scheme
 	// APIReader reads the ConfigMaps without the cache (see terraform.Revisions.Reader).
 	APIReader client.Reader
+	// AllowMutableSources accepts mutable ConfigMaps for templates that ask for them (see
+	// terraform.Revisions.AllowMutableSources).
+	AllowMutableSources bool
 }
 
 // +kubebuilder:rbac:groups=dinova.one,resources=terraformtemplates,verbs=get;list;watch
@@ -49,7 +52,7 @@ type TerraformTemplateReconciler struct {
 
 // Reconcile makes the revision of the current files of a TerraformTemplate.
 func (r *TerraformTemplateReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	revisions := &terraform.Revisions{Client: r.Client, Scheme: r.Scheme, Reader: r.APIReader}
+	revisions := &terraform.Revisions{Client: r.Client, Scheme: r.Scheme, Reader: r.APIReader, AllowMutableSources: r.AllowMutableSources}
 	return revisions.Reconcile(ctx, req)
 }
 

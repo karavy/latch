@@ -31,6 +31,8 @@ patches:
           - --tfstate-s3-endpoint=http://minio.tfstate-storage.svc.cluster.local:9000
           - --tfstate-s3-bucket=tfstate
           - --tfstate-s3-region=us-east-1
+          # Dev only: templates with allowMutableSources may read editable ConfigMaps.
+          - --allow-mutable-terraform-sources
       - op: add
         path: /spec/template/spec/containers/0/env
         value:

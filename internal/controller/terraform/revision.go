@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strconv"
+	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -117,6 +119,9 @@ type Revisions struct {
 	// Reader reads the ConfigMaps. It should not be a cache: right after a ConfigMap is
 	// deleted and created again, a cache may still hold the old one.
 	Reader client.Reader
+	// AllowMutableSources lets a template with spec.allowMutableSources read ConfigMaps that
+	// are not immutable (the --allow-mutable-terraform-sources flag).
+	AllowMutableSources bool
 }
 
 // Reconcile makes the revision of the current files of a TerraformTemplate.
@@ -157,10 +162,26 @@ func (r *Revisions) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resul
 	template.Status.RevisionName = revision.Name
 	template.Status.Digest = digest
 	template.Status.Sources = sources
-	return ctrl.Result{}, r.setReady(ctx, template, metav1.ConditionTrue, "RevisionReady", fmt.Sprintf("Revision %d (%s)", revision.Revision, digest))
+	message := fmt.Sprintf("Revision %d (%s)", revision.Revision, digest)
+	if mutable := mutableSources(sources); len(mutable) > 0 {
+		message += fmt.Sprintf("; ConfigMaps %s are mutable: an edit changes the code of the next runs", strings.Join(mutable, ", "))
+	}
+	return ctrl.Result{}, r.setReady(ctx, template, metav1.ConditionTrue, "RevisionReady", message)
 }
 
-// resolve reads the files of a template from its ConfigMaps, which must be immutable.
+// mutableSources returns the names of the sources that are not immutable.
+func mutableSources(sources []dinovav1alpha1.TerraformTemplateSource) []string {
+	var names []string
+	for _, source := range sources {
+		if source.Mutable {
+			names = append(names, strconv.Quote(source.Name))
+		}
+	}
+	return names
+}
+
+// resolve reads the files of a template from its ConfigMaps, which must be immutable unless
+// both the template and the operator allow mutable sources.
 func (r *Revisions) resolve(ctx context.Context, template *dinovav1alpha1.TerraformTemplate) (map[string]string, []dinovav1alpha1.TerraformTemplateSource, error) {
 	reader := r.Reader
 	if reader == nil {
@@ -180,8 +201,8 @@ func (r *Revisions) resolve(ctx context.Context, template *dinovav1alpha1.Terraf
 				readError = err
 				return "", err
 			}
-			if configMap.Immutable == nil || !*configMap.Immutable {
-				return "", &SourceError{"ConfigMapNotImmutable", fmt.Sprintf("ConfigMap %q holds Terraform files and must be immutable (immutable: true)", ref.Name)}
+			if err := r.checkMutable(template, configMap); err != nil {
+				return "", err
 			}
 			configMaps[ref.Name] = configMap
 		}
@@ -203,10 +224,28 @@ func (r *Revisions) resolve(ctx context.Context, template *dinovav1alpha1.Terraf
 	}
 	sources := make([]dinovav1alpha1.TerraformTemplateSource, 0, len(configMaps))
 	for name, configMap := range configMaps {
-		sources = append(sources, dinovav1alpha1.TerraformTemplateSource{Name: name, UID: string(configMap.UID)})
+		sources = append(sources, dinovav1alpha1.TerraformTemplateSource{Name: name, UID: string(configMap.UID), Mutable: !immutable(configMap)})
 	}
 	sort.Slice(sources, func(i, j int) bool { return sources[i].Name < sources[j].Name })
 	return files, sources, nil
+}
+
+// checkMutable refuses a ConfigMap that is not immutable, unless both the template and the
+// operator allow mutable sources.
+func (r *Revisions) checkMutable(template *dinovav1alpha1.TerraformTemplate, configMap *corev1.ConfigMap) error {
+	switch {
+	case immutable(configMap):
+		return nil
+	case !template.Spec.AllowMutableSources:
+		return &SourceError{"ConfigMapNotImmutable", fmt.Sprintf("ConfigMap %q holds Terraform files and must be immutable (immutable: true)", configMap.Name)}
+	case !r.AllowMutableSources:
+		return &SourceError{"MutableSourcesDisabled", fmt.Sprintf("ConfigMap %q is not immutable: the template allows mutable sources, but the operator was not started with --allow-mutable-terraform-sources", configMap.Name)}
+	}
+	return nil
+}
+
+func immutable(configMap *corev1.ConfigMap) bool {
+	return configMap.Immutable != nil && *configMap.Immutable
 }
 
 // revisions lists the revisions of a template, newest first.

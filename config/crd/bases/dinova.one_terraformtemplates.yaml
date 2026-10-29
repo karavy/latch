@@ -49,21 +49,32 @@ spec:
           spec:
             description: spec defines the template
             properties:
+              allowMutableSources:
+                description: |-
+                  AllowMutableSources accepts ConfigMaps without immutable: true, so that the files can be
+                  edited in place while debugging. Every edit still makes a new revision, and a run still
+                  records the revision it ran; but an edit reaches the next run of every Workflow and
+                  WorkflowInstance that use the template, without anyone creating a new ConfigMap. The
+                  operator honours it only when started with --allow-mutable-terraform-sources: leave that
+                  off in production.
+                type: boolean
               files:
                 description: |-
                   Files are the Terraform files. Names ending in .tf.tmpl are rendered by
                   terraform-engine (<FGT_XXX> placeholders and <FGT_FOR_STR> loops) against the
                   step's input variables; plain .tf files are used as they are.
                 items:
-                  description: TerraformFile is one file of a TerraformTemplate, read
-                    from a key of an immutable ConfigMap.
+                  description: |-
+                    TerraformFile is one file of a TerraformTemplate, read from a key of an immutable ConfigMap
+                    (or of any ConfigMap, see AllowMutableSources).
                   properties:
                     configMapKeyRef:
                       description: |-
                         ConfigMapKeyRef reads the file body from a key of a ConfigMap in the template's
                         namespace. The ConfigMap must be immutable (immutable: true), so that the code of a
                         revision can never change: to change it, create a new ConfigMap (or delete and recreate
-                        this one), and the operator makes a new revision.
+                        this one), and the operator makes a new revision. AllowMutableSources lifts the rule
+                        for debugging.
                       properties:
                         key:
                           maxLength: 253
@@ -112,7 +123,7 @@ spec:
                 description: |-
                   Conditions has Ready: True when the current revision matches the spec and its
                   ConfigMaps, False with the reason when the files cannot be read (a ConfigMap or a key is
-                  missing, or a ConfigMap is not immutable). A Workflow runs a template only when it is
+                  missing, or a ConfigMap is not immutable and mutable sources are not allowed). A Workflow runs a template only when it is
                   Ready.
                 items:
                   description: Condition contains details for one aspect of the current
@@ -199,6 +210,11 @@ spec:
                   description: TerraformTemplateSource is a ConfigMap a revision was
                     read from.
                   properties:
+                    mutable:
+                      description: |-
+                        Mutable is true when the ConfigMap is not immutable (see AllowMutableSources): its
+                        content can change, and each change makes a new revision.
+                      type: boolean
                     name:
                       description: Name of the ConfigMap.
                       type: string

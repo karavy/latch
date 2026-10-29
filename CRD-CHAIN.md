@@ -51,6 +51,9 @@ l'operatore ne fa uno snapshot in una ControllerRevision con il numero successiv
 identici a una revisione ancora conservata riportano quella revisione (rollback). Lo step
 esegue la revisione corrente, la copia in una ConfigMap sua e registra nello status del
 Workflow numero e digest della revisione eseguita.
+Per il debug, un template con `spec.allowMutableSources: true` accetta ConfigMap modificabili,
+solo se l'operatore gira con `--allow-mutable-terraform-sources`; ogni modifica fa comunque una
+nuova revisione.
 
 **State.** Lo state non appartiene al Workflow: è un oggetto S3 individuato da
 `<namespace>/<state.key>.tfstate`. Tutti i Workflow con la stessa chiave lavorano sulle stesse

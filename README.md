@@ -417,6 +417,22 @@ virtuozzo-vm   3          True    2d
   `terraformDigest`). Uno step che parte mentre l'operatore non ha ancora fatto la revisione di
   un template appena modificato la aspetta.
 
+#### ConfigMap modificabili per il debug
+
+Ricreare la ConfigMap a ogni prova è scomodo mentre si scrive il codice. Un template con
+`spec.allowMutableSources: true` accetta ConfigMap **senza** `immutable: true`, da modificare
+sul posto con `kubectl edit`, ma solo se l'operatore è avviato con
+`--allow-mutable-terraform-sources` (attivo in Tilt, spento di default):
+
+- ogni modifica crea comunque una nuova revisione, e il run registra quella che ha eseguito: la
+  tracciabilità non cambia;
+- lo status segna le ConfigMap con `mutable: true` e il messaggio di `Ready` lo ricorda;
+- una modifica arriva al run successivo di ogni Workflow e WorkflowInstance che usa il template
+  (con un'istanza in approval `Auto` parte subito un apply): per questo in produzione il flag
+  resta spento;
+- senza il flag il template ha `Ready=False` con motivo `MutableSourcesDisabled`; senza il campo,
+  `ConfigMapNotImmutable` come prima.
+
 All'avvio dello step il Workflow **copia** i file della revisione corrente in una ConfigMap
 immutabile di cui è owner (le revisioni successive non cambiano uno step già partito) e crea un Job che monta
 la ConfigMap, il PVC del workflow (solo file di lavoro: template renderizzati e provider) e un

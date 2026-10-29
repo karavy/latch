@@ -76,6 +76,7 @@ func main() {
 	var apiCAFile string
 	var apiWorkers, apiQueueSize int
 	var apiMaxResponseBytes int64
+	var allowMutableTerraformSources bool
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&tfStateEndpoint, "tfstate-s3-endpoint", "",
 		"URL of the S3-compatible storage that holds every Terraform state, for example http://minio.storage:9000. "+
@@ -83,6 +84,9 @@ func main() {
 	flag.StringVar(&tfStateBucket, "tfstate-s3-bucket", "", "Bucket of the Terraform state storage.")
 	flag.StringVar(&tfStateRegion, "tfstate-s3-region", "us-east-1",
 		"Region of the Terraform state storage (often arbitrary on-premises).")
+	flag.BoolVar(&allowMutableTerraformSources, "allow-mutable-terraform-sources", false,
+		"Let TerraformTemplates with spec.allowMutableSources read ConfigMaps that are not immutable, "+
+			"so that Terraform files can be edited in place while debugging. Leave it off in production.")
 	flag.StringVar(&apiAllowedOrigins, "apicall-allowed-origins", "",
 		"Comma-separated HTTP(S) origins allowed for ApiCall; empty denies all destinations.")
 	flag.StringVar(&apiOriginsConfigMap, "apicall-allowed-origins-configmap", "",
@@ -283,9 +287,13 @@ func main() {
 		setupLog.Error(err, "Failed to create controller", "controller", "workflow")
 		os.Exit(1)
 	}
+	if allowMutableTerraformSources {
+		setupLog.Info("Mutable Terraform sources are allowed: templates with allowMutableSources read editable ConfigMaps")
+	}
 	if err := (&controller.TerraformTemplateReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:              mgr.GetClient(),
+		Scheme:              mgr.GetScheme(),
+		AllowMutableSources: allowMutableTerraformSources,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "terraformtemplate")
 		os.Exit(1)

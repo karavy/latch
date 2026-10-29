@@ -1,6 +1,9 @@
 # The Terraform files live in an immutable ConfigMap: the operator refuses any other. To change
 # them, create the ConfigMap again (or a new one, and point the template to it); the operator
 # then makes a new revision of the template (status.revision), and the next Workflow runs it.
+# While debugging, spec.allowMutableSources (honoured only by an operator started with
+# --allow-mutable-terraform-sources) accepts a ConfigMap without immutable: true, edited in
+# place with kubectl edit: every edit still makes a new revision.
 apiVersion: v1
 kind: ConfigMap
 metadata:

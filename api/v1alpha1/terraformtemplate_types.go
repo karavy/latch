@@ -40,9 +40,18 @@ type TerraformTemplateSpec struct {
 	// +kubebuilder:default=10
 	// +optional
 	RevisionHistoryLimit int32 `json:"revisionHistoryLimit,omitempty"`
+	// AllowMutableSources accepts ConfigMaps without immutable: true, so that the files can be
+	// edited in place while debugging. Every edit still makes a new revision, and a run still
+	// records the revision it ran; but an edit reaches the next run of every Workflow and
+	// WorkflowInstance that use the template, without anyone creating a new ConfigMap. The
+	// operator honours it only when started with --allow-mutable-terraform-sources: leave that
+	// off in production.
+	// +optional
+	AllowMutableSources bool `json:"allowMutableSources,omitempty"`
 }
 
-// TerraformFile is one file of a TerraformTemplate, read from a key of an immutable ConfigMap.
+// TerraformFile is one file of a TerraformTemplate, read from a key of an immutable ConfigMap
+// (or of any ConfigMap, see AllowMutableSources).
 type TerraformFile struct {
 	// Name is a plain file name (no directories) ending in .tf or .tf.tmpl.
 	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9][A-Za-z0-9._-]*\.tf(\.tmpl)?$`
@@ -51,7 +60,8 @@ type TerraformFile struct {
 	// ConfigMapKeyRef reads the file body from a key of a ConfigMap in the template's
 	// namespace. The ConfigMap must be immutable (immutable: true), so that the code of a
 	// revision can never change: to change it, create a new ConfigMap (or delete and recreate
-	// this one), and the operator makes a new revision.
+	// this one), and the operator makes a new revision. AllowMutableSources lifts the rule
+	// for debugging.
 	// +required
 	ConfigMapKeyRef WorkflowConfigMapKeyReference `json:"configMapKeyRef"`
 }
@@ -78,7 +88,7 @@ type TerraformTemplateStatus struct {
 	Sources []TerraformTemplateSource `json:"sources,omitempty"`
 	// Conditions has Ready: True when the current revision matches the spec and its
 	// ConfigMaps, False with the reason when the files cannot be read (a ConfigMap or a key is
-	// missing, or a ConfigMap is not immutable). A Workflow runs a template only when it is
+	// missing, or a ConfigMap is not immutable and mutable sources are not allowed). A Workflow runs a template only when it is
 	// Ready.
 	// +listType=map
 	// +listMapKey=type
@@ -92,6 +102,10 @@ type TerraformTemplateSource struct {
 	Name string `json:"name"`
 	// UID of the ConfigMap: a ConfigMap deleted and created again has another one.
 	UID string `json:"uid"`
+	// Mutable is true when the ConfigMap is not immutable (see AllowMutableSources): its
+	// content can change, and each change makes a new revision.
+	// +optional
+	Mutable bool `json:"mutable,omitempty"`
 }
 
 // +kubebuilder:object:root=true
