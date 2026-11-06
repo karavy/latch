@@ -220,6 +220,13 @@ func (r *Handler) reconcileFailedCall(ctx context.Context, run *templateRun, ste
 	if state.Phase == stepPhaseRecovering {
 		return r.failWorkflow(ctx, run, state, "RecoveryFailed", fmt.Sprintf("API step %q: the recover request failed, so the operation was not resumed%s", step.Name, callFailure(call)))
 	}
+	if state.Phase == stepPhaseRunning && failureTolerated(call, apiStep.AcceptStatusCodes, false) {
+		// Only the step's own request is judged here, never a poll of another template.
+		state.Phase = stepPhaseSucceeded
+		state.Message = fmt.Sprintf("API step completed with HTTP %d, accepted by acceptStatusCodes; no outputs published", call.Status.Response.StatusCode)
+		run.advance()
+		return ctrl.Result{Requeue: true}, r.Status().Update(ctx, run.owner)
+	}
 	if state.Phase == stepPhasePolling && pollFailureTolerated(call, apiStep.Poll) {
 		return r.scheduleNextPoll(ctx, run, apiStep.Poll, state, "Poll request failed with a tolerated error; another poll will be scheduled")
 	}

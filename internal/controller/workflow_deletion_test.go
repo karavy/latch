@@ -37,6 +37,7 @@ var _ = Describe("Workflow delete steps", func() {
 		mu       sync.Mutex
 		requests []string
 		failing  bool
+		gone     bool
 		server   *httptest.Server
 	)
 	seen := func() []string {
@@ -45,13 +46,15 @@ var _ = Describe("Workflow delete steps", func() {
 		return append([]string(nil), requests...)
 	}
 	BeforeEach(func() {
-		requests, failing = nil, false
+		requests, failing, gone = nil, false, false
 		server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 			mu.Lock()
 			requests = append(requests, req.Method+" "+req.URL.RequestURI())
-			fail := failing
+			fail, missing := failing, gone
 			mu.Unlock()
 			switch {
+			case req.Method == http.MethodDelete && missing:
+				w.WriteHeader(http.StatusNotFound)
 			case req.Method == http.MethodPost && fail:
 				w.WriteHeader(http.StatusInternalServerError)
 			case req.Method == http.MethodPost:
@@ -64,8 +67,9 @@ var _ = Describe("Workflow delete steps", func() {
 	})
 
 	// create makes a Workflow with one create step and one delete step that sends the
-	// created id back, and drives the reconcilers while until holds.
-	create := func(name string) (*dinovav1alpha1.Workflow, func(until func() bool)) {
+	// created id back, and accepts the given statuses, and drives the reconcilers while until
+	// holds.
+	create := func(name string, accept ...int32) (*dinovav1alpha1.Workflow, func(until func() bool)) {
 		GinkgoHelper()
 		createTemplates(map[string]dinovav1alpha1.ApiCallTemplateSpec{
 			name + "-create": {Method: http.MethodPost, Endpoint: server.URL + "/segments"},
@@ -79,6 +83,7 @@ var _ = Describe("Workflow delete steps", func() {
 				})}},
 				DeleteSteps: []dinovav1alpha1.WorkflowStep{{Name: "remove", API: apiStepOf(name+"-delete", func(step *dinovav1alpha1.WorkflowAPIStep) {
 					step.Inputs = []dinovav1alpha1.WorkflowInput{{Step: "create", Output: "id", ToQuery: "id"}}
+					step.AcceptStatusCodes = accept
 				})}},
 			},
 		}, "")
@@ -166,5 +171,53 @@ var _ = Describe("Workflow delete steps", func() {
 		Expect(current.DeletionTimestamp.IsZero()).To(BeFalse())
 		Expect(current.Finalizers).To(ContainElement("dinova.one/workflow-deletion"))
 		Expect(stage(current).Deletion.Steps[0].Phase).To(Equal("Failed"))
+	})
+
+	It("completes a delete step whose response has an accepted status", func() {
+		workflow, drive := create("del-accepts", http.StatusNotFound)
+		drive(func() bool { return phase(workflow) == "Succeeded" })
+		mu.Lock()
+		gone = true // deleted by someone else in the meantime
+		mu.Unlock()
+
+		Expect(k8sClient.Delete(ctx, workflow)).To(Succeed())
+		drive(func() bool { _, err := get(workflow); return apierrors.IsNotFound(err) })
+		Expect(seen()).To(Equal([]string{"POST /segments", "DELETE /segments?id=seg-1"}))
+	})
+
+	It("keeps the workflow when a delete step gets a status it does not accept", func() {
+		workflow, drive := create("del-404", http.StatusConflict)
+		drive(func() bool { return phase(workflow) == "Succeeded" })
+		mu.Lock()
+		gone = true
+		mu.Unlock()
+
+		Expect(k8sClient.Delete(ctx, workflow)).To(Succeed())
+		drive(func() bool {
+			current, err := get(workflow)
+			return err == nil && current.Status.Deletion != nil && current.Status.Deletion.Phase == "Failed"
+		})
+		current, err := get(workflow)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(stage(current).Deletion.Steps[0].Phase).To(Equal("Failed"))
+	})
+
+	It("accepts statuses only on delete steps, and never ones that are retried", func() {
+		invalid := func(name string, spec dinovav1alpha1.WorkflowTemplateSpec) error {
+			return k8sClient.Create(ctx, &dinovav1alpha1.WorkflowTemplate{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"}, Spec: spec})
+		}
+		accepting := apiStepOf("any", func(step *dinovav1alpha1.WorkflowAPIStep) { step.AcceptStatusCodes = []int32{404} })
+		Expect(invalid("accept-in-steps", dinovav1alpha1.WorkflowTemplateSpec{
+			Steps: []dinovav1alpha1.WorkflowStep{{Name: "create", API: accepting}},
+		})).To(MatchError(ContainSubstring("acceptStatusCodes can only be set on deleteSteps")))
+
+		retried := apiStepOf("any", func(step *dinovav1alpha1.WorkflowAPIStep) {
+			step.AcceptStatusCodes = []int32{404, 503}
+			step.Retry = &dinovav1alpha1.WorkflowRetry{StatusCodes: []int32{503}}
+		})
+		Expect(invalid("accept-retried", dinovav1alpha1.WorkflowTemplateSpec{
+			Steps:       []dinovav1alpha1.WorkflowStep{{Name: "create", API: apiStepOf("any", nil)}},
+			DeleteSteps: []dinovav1alpha1.WorkflowStep{{Name: "remove", API: retried}},
+		})).To(MatchError(ContainSubstring("both in acceptStatusCodes and in retry.statusCodes")))
 	})
 })

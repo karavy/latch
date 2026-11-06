@@ -50,8 +50,10 @@ spec:
                   from Kubernetes, and only api steps are allowed. They can read the parameters and the
                   outputs of the steps above; a step that needs an output of a step that never completed
                   is skipped, because there is nothing to undo. A failed delete step keeps the Workflow in
-                  Kubernetes (its finalizer stays), so that cleanup is never dropped silently. Step names
-                  are unique across steps and deleteSteps.
+                  Kubernetes (its finalizer stays), so that cleanup is never dropped silently; a step that
+                  sets acceptStatusCodes completes instead when the response has one of them, for example
+                  404 for an object that someone already deleted. Step names are unique across steps and
+                  deleteSteps.
                 items:
                   description: WorkflowStep is exactly one API or Terraform operation.
                   properties:
@@ -60,6 +62,21 @@ spec:
                         WorkflowAPIStep runs an ApiCall created from an existing ApiCallTemplate and
                         may poll until ready.
                       properties:
+                        acceptStatusCodes:
+                          description: |-
+                            AcceptStatusCodes lists the HTTP statuses of the step's own request that complete the
+                            step instead of failing it, such as 404 for a delete of an object that is already gone.
+                            Only delete steps can set it. An accepted response ends the step at once: no poll, no
+                            expect, and no outputs are published, so a later delete step that reads one of them is
+                            skipped. The statuses cannot also be in retry.statusCodes or poll.retryOnStatusCodes.
+                          items:
+                            format: int32
+                            maximum: 599
+                            minimum: 400
+                            type: integer
+                          maxItems: 8
+                          type: array
+                          x-kubernetes-list-type: set
                         debug:
                           description: |-
                             Debug makes the step validate and log its request without sending it, like debug on the
@@ -1048,6 +1065,17 @@ spec:
                       required:
                       - templateRef
                       type: object
+                      x-kubernetes-validations:
+                      - message: a status cannot be both in acceptStatusCodes and
+                          in retry.statusCodes
+                        rule: '!has(self.acceptStatusCodes) || !has(self.retry) ||
+                          !has(self.retry.statusCodes) || !self.retry.statusCodes.exists(c,
+                          c in self.acceptStatusCodes)'
+                      - message: a status cannot be both in acceptStatusCodes and
+                          in poll.retryOnStatusCodes
+                        rule: '!has(self.acceptStatusCodes) || !has(self.poll) ||
+                          !has(self.poll.retryOnStatusCodes) || !self.poll.retryOnStatusCodes.exists(c,
+                          c in self.acceptStatusCodes)'
                     name:
                       maxLength: 40
                       pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
@@ -1456,6 +1484,21 @@ spec:
                         WorkflowAPIStep runs an ApiCall created from an existing ApiCallTemplate and
                         may poll until ready.
                       properties:
+                        acceptStatusCodes:
+                          description: |-
+                            AcceptStatusCodes lists the HTTP statuses of the step's own request that complete the
+                            step instead of failing it, such as 404 for a delete of an object that is already gone.
+                            Only delete steps can set it. An accepted response ends the step at once: no poll, no
+                            expect, and no outputs are published, so a later delete step that reads one of them is
+                            skipped. The statuses cannot also be in retry.statusCodes or poll.retryOnStatusCodes.
+                          items:
+                            format: int32
+                            maximum: 599
+                            minimum: 400
+                            type: integer
+                          maxItems: 8
+                          type: array
+                          x-kubernetes-list-type: set
                         debug:
                           description: |-
                             Debug makes the step validate and log its request without sending it, like debug on the
@@ -2444,6 +2487,17 @@ spec:
                       required:
                       - templateRef
                       type: object
+                      x-kubernetes-validations:
+                      - message: a status cannot be both in acceptStatusCodes and
+                          in retry.statusCodes
+                        rule: '!has(self.acceptStatusCodes) || !has(self.retry) ||
+                          !has(self.retry.statusCodes) || !self.retry.statusCodes.exists(c,
+                          c in self.acceptStatusCodes)'
+                      - message: a status cannot be both in acceptStatusCodes and
+                          in poll.retryOnStatusCodes
+                        rule: '!has(self.acceptStatusCodes) || !has(self.poll) ||
+                          !has(self.poll.retryOnStatusCodes) || !self.poll.retryOnStatusCodes.exists(c,
+                          c in self.acceptStatusCodes)'
                     name:
                       maxLength: 40
                       pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
@@ -2816,6 +2870,8 @@ spec:
             x-kubernetes-validations:
             - message: deleteSteps can only contain api steps
               rule: '!has(self.deleteSteps) || self.deleteSteps.all(s, has(s.api))'
+            - message: acceptStatusCodes can only be set on deleteSteps
+              rule: self.steps.all(s, !has(s.api) || !has(s.api.acceptStatusCodes))
         required:
         - spec
         type: object
