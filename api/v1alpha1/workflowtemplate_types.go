@@ -25,6 +25,7 @@ import (
 // its steps. A template stays editable; a Workflow that is running one fails if the template
 // changes under it, rather than mixing two versions.
 // +kubebuilder:validation:XValidation:rule="!has(self.deleteSteps) || self.deleteSteps.all(s, has(s.api))",message="deleteSteps can only contain api steps"
+// +kubebuilder:validation:XValidation:rule="self.steps.all(s, !has(s.api) || !has(s.api.acceptStatusCodes))",message="acceptStatusCodes can only be set on deleteSteps"
 type WorkflowTemplateSpec struct {
 	// Parameters are the values a Workflow gives when it runs the template, such as a client
 	// name. A step reads one with an input that sets "parameter", or with a template output.
@@ -44,8 +45,10 @@ type WorkflowTemplateSpec struct {
 	// from Kubernetes, and only api steps are allowed. They can read the parameters and the
 	// outputs of the steps above; a step that needs an output of a step that never completed
 	// is skipped, because there is nothing to undo. A failed delete step keeps the Workflow in
-	// Kubernetes (its finalizer stays), so that cleanup is never dropped silently. Step names
-	// are unique across steps and deleteSteps.
+	// Kubernetes (its finalizer stays), so that cleanup is never dropped silently; a step that
+	// sets acceptStatusCodes completes instead when the response has one of them, for example
+	// 404 for an object that someone already deleted. Step names are unique across steps and
+	// deleteSteps.
 	// +kubebuilder:validation:MaxItems=20
 	// +listType=atomic
 	// +optional
@@ -89,6 +92,8 @@ type WorkflowResourceReference struct {
 
 // WorkflowAPIStep runs an ApiCall created from an existing ApiCallTemplate and
 // may poll until ready.
+// +kubebuilder:validation:XValidation:rule="!has(self.acceptStatusCodes) || !has(self.retry) || !has(self.retry.statusCodes) || !self.retry.statusCodes.exists(c, c in self.acceptStatusCodes)",message="a status cannot be both in acceptStatusCodes and in retry.statusCodes"
+// +kubebuilder:validation:XValidation:rule="!has(self.acceptStatusCodes) || !has(self.poll) || !has(self.poll.retryOnStatusCodes) || !self.poll.retryOnStatusCodes.exists(c, c in self.acceptStatusCodes)",message="a status cannot be both in acceptStatusCodes and in poll.retryOnStatusCodes"
 type WorkflowAPIStep struct {
 	// TemplateRef names the ApiCallTemplate that defines this step's request.
 	// The Workflow runs a child ApiCall created from it, owned by the Workflow.
@@ -136,6 +141,17 @@ type WorkflowAPIStep struct {
 	// Poll repeats a read request until the JSON response satisfies the condition.
 	// +optional
 	Poll *WorkflowPoll `json:"poll,omitempty"`
+	// AcceptStatusCodes lists the HTTP statuses of the step's own request that complete the
+	// step instead of failing it, such as 404 for a delete of an object that is already gone.
+	// Only delete steps can set it. An accepted response ends the step at once: no poll, no
+	// expect, and no outputs are published, so a later delete step that reads one of them is
+	// skipped. The statuses cannot also be in retry.statusCodes or poll.retryOnStatusCodes.
+	// +kubebuilder:validation:MaxItems=8
+	// +kubebuilder:validation:items:Minimum=400
+	// +kubebuilder:validation:items:Maximum=599
+	// +listType=set
+	// +optional
+	AcceptStatusCodes []int32 `json:"acceptStatusCodes,omitempty"`
 }
 
 // WorkflowExpectation requires a field of a JSON response to have a given value.

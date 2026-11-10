@@ -75,6 +75,10 @@ un template ha `deleteSteps`. Uno step che ha bisogno dell'output di uno step ch
 arrivato in fondo viene **saltato** (`Skipped`): non c'è niente da annullare. Se uno step di
 eliminazione **fallisce**, il Workflow non sparisce: resta con `status.deletion.phase: Failed`,
 così la pulizia non va persa in silenzio; per rinunciarci si toglie il finalizer a mano.
+Un oggetto già cancellato da qualcun altro non deve bloccare la pulizia: uno step di
+eliminazione può elencare in `acceptStatusCodes` gli status che lo chiudono comunque, di solito
+`[404]`. Lo step finisce `Succeeded` senza pubblicare output (e uno step successivo che li legge
+viene saltato). È ammesso solo nei `deleteSteps`, e mai su uno status che lo step ritenta.
 Anche un template che non esiste più blocca la pulizia con `WorkflowTemplateNotFound`.
 
 **Nomi degli oggetti creati.** Gli ApiCall, i Secret, i Job e i PVC di un template hanno il nome
