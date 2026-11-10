@@ -7,10 +7,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -46,10 +48,21 @@ const (
 var ErrRevisionPending = errors.New("the TerraformTemplate has no revision of its current spec yet")
 
 // SourceError is a problem with the files of a TerraformTemplate that only a change of the
-// template or of its ConfigMaps can fix. Reason is the reason of the Ready condition.
+// template or of its ConfigMaps can fix. Reason is the reason of the Ready condition. Retry
+// marks a problem outside the cluster that may go away by itself (the git server unreachable,
+// credentials just rotated, a branch not pushed yet): the operator tries again after
+// GitRetryInterval.
 type SourceError struct {
 	Reason, Message string
+	Retry           bool
 }
+
+// GitRetryInterval is how long the operator waits before reading a git source again after a
+// failure that may go away by itself.
+const GitRetryInterval = time.Minute
+
+// maxFiles is the most files a revision may hold, from ConfigMaps and git together.
+const maxFiles = 32
 
 func (e *SourceError) Error() string { return e.Message }
 
@@ -122,6 +135,8 @@ type Revisions struct {
 	// AllowMutableSources lets a template with spec.allowMutableSources read ConfigMaps that
 	// are not immutable (the --allow-mutable-terraform-sources flag).
 	AllowMutableSources bool
+	// Git reads spec.git; nil is GoGit.
+	Git GitFetcher
 }
 
 // Reconcile makes the revision of the current files of a TerraformTemplate.
@@ -131,10 +146,14 @@ func (r *Revisions) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resul
 	if err := r.Client.Get(ctx, req.NamespacedName, template); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	files, sources, err := r.resolve(ctx, template)
+	files, sources, gitStatus, err := r.resolve(ctx, template)
 	var sourceError *SourceError
 	if errors.As(err, &sourceError) {
-		return ctrl.Result{}, r.setReady(ctx, template, metav1.ConditionFalse, sourceError.Reason, sourceError.Message)
+		result := ctrl.Result{}
+		if sourceError.Retry {
+			result.RequeueAfter = GitRetryInterval
+		}
+		return result, r.setReady(ctx, template, metav1.ConditionFalse, sourceError.Reason, sourceError.Message)
 	}
 	if err != nil {
 		return ctrl.Result{}, err
@@ -162,7 +181,11 @@ func (r *Revisions) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resul
 	template.Status.RevisionName = revision.Name
 	template.Status.Digest = digest
 	template.Status.Sources = sources
+	template.Status.Git = gitStatus
 	message := fmt.Sprintf("Revision %d (%s)", revision.Revision, digest)
+	if gitStatus != nil {
+		message += fmt.Sprintf(", git commit %s", trimCommit(gitStatus.Commit))
+	}
 	if mutable := mutableSources(sources); len(mutable) > 0 {
 		message += fmt.Sprintf("; ConfigMaps %s are mutable: an edit changes the code of the next runs", strings.Join(mutable, ", "))
 	}
@@ -180,9 +203,129 @@ func mutableSources(sources []dinovav1alpha1.TerraformTemplateSource) []string {
 	return names
 }
 
-// resolve reads the files of a template from its ConfigMaps, which must be immutable unless
-// both the template and the operator allow mutable sources.
-func (r *Revisions) resolve(ctx context.Context, template *dinovav1alpha1.TerraformTemplate) (map[string]string, []dinovav1alpha1.TerraformTemplateSource, error) {
+// resolve reads the files of a template: those of spec.git, if any, and those of its
+// ConfigMaps. A file name may come from only one of them.
+func (r *Revisions) resolve(ctx context.Context, template *dinovav1alpha1.TerraformTemplate) (map[string]string, []dinovav1alpha1.TerraformTemplateSource, *dinovav1alpha1.TerraformTemplateGitStatus, error) {
+	files := map[string]string{}
+	var gitStatus *dinovav1alpha1.TerraformTemplateGitStatus
+	if template.Spec.Git != nil {
+		gitFiles, status, err := r.gitFiles(ctx, template)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		maps.Copy(files, gitFiles)
+		gitStatus = status
+	}
+	var sources []dinovav1alpha1.TerraformTemplateSource
+	if len(template.Spec.Files) > 0 {
+		configMapFiles, configMapSources, err := r.resolveConfigMaps(ctx, template)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		for name, content := range configMapFiles {
+			if _, duplicate := files[name]; duplicate {
+				return nil, nil, nil, &SourceError{Reason: "InvalidFiles", Message: fmt.Sprintf("file %q is both in spec.files and in the git repository", name)}
+			}
+			files[name] = content
+		}
+		sources = configMapSources
+	}
+	if len(files) > maxFiles {
+		return nil, nil, nil, &SourceError{Reason: "InvalidFiles", Message: fmt.Sprintf("the template has %d files, at most %d are allowed", len(files), maxFiles)}
+	}
+	return files, sources, gitStatus, nil
+}
+
+// gitFiles returns the files of spec.git. It reads the repository only when the source in the
+// spec (url, ref, path) or the annotation dinova.one/git-refresh differ from those the current
+// revision was read from; otherwise it takes the files back from that revision, so that
+// a change of a ConfigMap or a resync never brings in a new commit of a branch.
+func (r *Revisions) gitFiles(ctx context.Context, template *dinovav1alpha1.TerraformTemplate) (map[string]string, *dinovav1alpha1.TerraformTemplateGitStatus, error) {
+	source := template.Spec.Git
+	wanted := dinovav1alpha1.TerraformTemplateGitStatus{
+		URL: source.URL, Ref: GitRef(source.Ref), Path: GitPath(source.Path), Refresh: template.Annotations[GitRefreshAnnotation],
+	}
+	if current := template.Status.Git; current != nil && current.URL == wanted.URL && current.Ref == wanted.Ref &&
+		current.Path == wanted.Path && current.Refresh == wanted.Refresh && (source.Ref.Commit == "" || current.Commit == source.Ref.Commit) {
+		if files, ok := r.revisionGitFiles(ctx, template, current.Files); ok {
+			return files, current, nil
+		}
+	}
+	auth, err := r.gitAuth(ctx, template)
+	if err != nil {
+		return nil, nil, err
+	}
+	fetcher := r.Git
+	if fetcher == nil {
+		fetcher = GoGit{}
+	}
+	fetchContext, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	files, commit, err := fetcher.Fetch(fetchContext, *source, auth)
+	if err != nil {
+		return nil, nil, err
+	}
+	wanted.Commit = commit
+	wanted.Files = sortedNames(files)
+	logf.FromContext(ctx).Info("Read TerraformTemplate files from git", "template", template.Name, "url", RedactURL(source.URL), "ref", wanted.Ref, "commit", commit)
+	return files, &wanted, nil
+}
+
+// revisionGitFiles takes the files read from git back from the current revision. It reports
+// false when the revision or one of the files is not there, and the repository must be read
+// again.
+func (r *Revisions) revisionGitFiles(ctx context.Context, template *dinovav1alpha1.TerraformTemplate, names []string) (map[string]string, bool) {
+	if template.Status.RevisionName == "" || len(names) == 0 {
+		return nil, false
+	}
+	revision := &appsv1.ControllerRevision{}
+	if err := r.Client.Get(ctx, types.NamespacedName{Namespace: template.Namespace, Name: template.Status.RevisionName}, revision); err != nil {
+		return nil, false
+	}
+	all, err := RevisionFiles(revision)
+	if err != nil {
+		return nil, false
+	}
+	files := make(map[string]string, len(names))
+	for _, name := range names {
+		content, ok := all[name]
+		if !ok {
+			return nil, false
+		}
+		files[name] = content
+	}
+	return files, true
+}
+
+// gitAuth reads the credentials of spec.git.secretRef. A missing Secret or key is retried:
+// the Secret may be created after the template.
+func (r *Revisions) gitAuth(ctx context.Context, template *dinovav1alpha1.TerraformTemplate) (*GitAuth, error) {
+	ref := template.Spec.Git.SecretRef
+	if ref == nil {
+		return nil, nil
+	}
+	reader := r.Reader
+	if reader == nil {
+		reader = r.Client
+	}
+	secret := &corev1.Secret{}
+	err := reader.Get(ctx, types.NamespacedName{Namespace: template.Namespace, Name: ref.Name}, secret)
+	if apierrors.IsNotFound(err) {
+		return nil, &SourceError{Reason: "GitSecretUnavailable", Message: fmt.Sprintf("Secret %q was not found", ref.Name), Retry: true}
+	}
+	if err != nil {
+		return nil, err
+	}
+	username, password := string(secret.Data[GitUsernameKey]), string(secret.Data[GitPasswordKey])
+	if username == "" || password == "" {
+		return nil, &SourceError{Reason: "GitSecretUnavailable", Message: fmt.Sprintf("Secret %q needs the keys %q and %q", ref.Name, GitUsernameKey, GitPasswordKey), Retry: true}
+	}
+	return &GitAuth{Username: username, Password: password}, nil
+}
+
+// resolveConfigMaps reads the files of spec.files from their ConfigMaps, which must be
+// immutable unless both the template and the operator allow mutable sources.
+func (r *Revisions) resolveConfigMaps(ctx context.Context, template *dinovav1alpha1.TerraformTemplate) (map[string]string, []dinovav1alpha1.TerraformTemplateSource, error) {
 	reader := r.Reader
 	if reader == nil {
 		reader = r.Client
@@ -195,7 +338,7 @@ func (r *Revisions) resolve(ctx context.Context, template *dinovav1alpha1.Terraf
 			configMap = &corev1.ConfigMap{}
 			err := reader.Get(ctx, types.NamespacedName{Namespace: template.Namespace, Name: ref.Name}, configMap)
 			if apierrors.IsNotFound(err) {
-				return "", &SourceError{"ConfigMapUnavailable", fmt.Sprintf("ConfigMap %q was not found", ref.Name)}
+				return "", &SourceError{Reason: "ConfigMapUnavailable", Message: fmt.Sprintf("ConfigMap %q was not found", ref.Name)}
 			}
 			if err != nil {
 				readError = err
@@ -208,7 +351,7 @@ func (r *Revisions) resolve(ctx context.Context, template *dinovav1alpha1.Terraf
 		}
 		value, ok := configMap.Data[ref.Key]
 		if !ok {
-			return "", &SourceError{"ConfigMapKeyMissing", fmt.Sprintf("ConfigMap %q has no key %q", ref.Name, ref.Key)}
+			return "", &SourceError{Reason: "ConfigMapKeyMissing", Message: fmt.Sprintf("ConfigMap %q has no key %q", ref.Name, ref.Key)}
 		}
 		return value, nil
 	}
@@ -220,7 +363,7 @@ func (r *Revisions) resolve(ctx context.Context, template *dinovav1alpha1.Terraf
 	case errors.As(err, &sourceError):
 		return nil, nil, err
 	case err != nil: // the spec itself is wrong, for example two files with one name
-		return nil, nil, &SourceError{"InvalidFiles", err.Error()}
+		return nil, nil, &SourceError{Reason: "InvalidFiles", Message: err.Error()}
 	}
 	sources := make([]dinovav1alpha1.TerraformTemplateSource, 0, len(configMaps))
 	for name, configMap := range configMaps {
@@ -237,9 +380,9 @@ func (r *Revisions) checkMutable(template *dinovav1alpha1.TerraformTemplate, con
 	case immutable(configMap):
 		return nil
 	case !template.Spec.AllowMutableSources:
-		return &SourceError{"ConfigMapNotImmutable", fmt.Sprintf("ConfigMap %q holds Terraform files and must be immutable (immutable: true)", configMap.Name)}
+		return &SourceError{Reason: "ConfigMapNotImmutable", Message: fmt.Sprintf("ConfigMap %q holds Terraform files and must be immutable (immutable: true)", configMap.Name)}
 	case !r.AllowMutableSources:
-		return &SourceError{"MutableSourcesDisabled", fmt.Sprintf("ConfigMap %q is not immutable: the template allows mutable sources, but the operator was not started with --allow-mutable-terraform-sources", configMap.Name)}
+		return &SourceError{Reason: "MutableSourcesDisabled", Message: fmt.Sprintf("ConfigMap %q is not immutable: the template allows mutable sources, but the operator was not started with --allow-mutable-terraform-sources", configMap.Name)}
 	}
 	return nil
 }

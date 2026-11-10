@@ -43,16 +43,19 @@ type TerraformTemplateReconciler struct {
 	// AllowMutableSources accepts mutable ConfigMaps for templates that ask for them (see
 	// terraform.Revisions.AllowMutableSources).
 	AllowMutableSources bool
+	// Git reads the git sources of the templates; nil is terraform.GoGit.
+	Git terraform.GitFetcher
 }
 
 // +kubebuilder:rbac:groups=dinova.one,resources=terraformtemplates,verbs=get;list;watch
 // +kubebuilder:rbac:groups=dinova.one,resources=terraformtemplates/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get
 // +kubebuilder:rbac:groups=apps,resources=controllerrevisions,verbs=get;list;watch;create;delete
 
 // Reconcile makes the revision of the current files of a TerraformTemplate.
 func (r *TerraformTemplateReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	revisions := &terraform.Revisions{Client: r.Client, Scheme: r.Scheme, Reader: r.APIReader, AllowMutableSources: r.AllowMutableSources}
+	revisions := &terraform.Revisions{Client: r.Client, Scheme: r.Scheme, Reader: r.APIReader, AllowMutableSources: r.AllowMutableSources, Git: r.Git}
 	return revisions.Reconcile(ctx, req)
 }
 

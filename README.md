@@ -392,9 +392,10 @@ il progresso letto e l'ApiCall della richiesta. Esempio nello step `wait-deliver
 Come per le chiamate API, la definizione è separata dal workflow: un
 [TerraformTemplate](api/v1alpha1/terraformtemplate_types.go) contiene l'elenco dei file
 (`spec.files`: `name` + `configMapKeyRef`, nome senza directory e con estensione `.tf` o
-`.tf.tmpl`) e lo step lo richiama con `terraform.templateRef`. Il codice sta **solo** in
-ConfigMap **immutabili** (`immutable: true`): l'operatore rifiuta le altre, così il codice di
-una versione non può cambiare.
+`.tf.tmpl`) e lo step lo richiama con `terraform.templateRef`. Il codice sta in ConfigMap
+**immutabili** (`immutable: true`), che l'operatore rifiuta se non lo sono, così il codice di
+una versione non può cambiare; oppure in un repository git (vedi [File da un repository
+git](#file-da-un-repository-git)).
 
 #### Revisioni
 
@@ -436,6 +437,45 @@ sul posto con `kubectl edit`, ma solo se l'operatore è avviato con
   resta spento;
 - senza il flag il template ha `Ready=False` con motivo `MutableSourcesDisabled`; senza il campo,
   `ConfigMapNotImmutable` come prima.
+
+#### File da un repository git
+
+Un modulo che sta già in un repository si legge da lì con `spec.git`, senza copiarlo in una
+ConfigMap. Si può usare insieme a `spec.files`, per esempio per aggiungere un file che serve
+solo a Latch:
+
+```yaml
+spec:
+  git:
+    url: https://gitlab.com/dinova-one/terraform/modules/vsphere-project   # solo https
+    ref: {tag: v0.3.0}              # oppure branch; commit (SHA completo) fissa un commit preciso
+    path: .                         # una sola cartella, default la radice
+    secretRef: {name: gitlab-modules}   # chiavi username e password; omesso per un repo pubblico
+  files:
+    - name: latch-providers.tf
+      configMapKeyRef: {name: step-vsphere-project, key: latch-providers.tf}
+```
+
+- L'operatore clona in memoria (go-git, niente binario git nel controller né nel runner) e
+  legge i file `.tf` e `.tf.tmpl` direttamente nella cartella `path`: le sottocartelle e gli
+  altri file sono ignorati, i link simbolici e i file vuoti saltati. Al massimo 512 KiB di file
+  da git e 32 file in tutto.
+- I file finiscono nella revisione come quelli delle ConfigMap: il run registra revisione e
+  digest, e `status.git` dice URL, ref, cartella, commit e i file letti
+  (`kubectl get terraformtemplate -o wide` mostra il commit).
+- Il repository si legge **solo quando cambia la sorgente** (`url`, `ref`, `path`), non a
+  intervalli: un commit nuovo su un branch arriva al template solo cambiando il ref o mettendo
+  un valore nuovo nell'annotazione `dinova.one/git-refresh`. In produzione conviene un tag o un
+  commit.
+- Un nome di file che arriva sia da git sia da `spec.files` dà `Ready=False` con motivo
+  `InvalidFiles`.
+- Errori: `GitSecretUnavailable` (Secret o chiavi mancanti) e `GitFetchFailed` (rete,
+  credenziali, branch o tag che non esiste) si riprovano ogni minuto; `GitPathNotFound`,
+  `GitNoFiles`, `GitFilesTooLarge` e `GitCommitNotFound` aspettano una modifica del template.
+  L'URL nei messaggi è sempre senza credenziali.
+- Il Secret di `secretRef` è nel namespace del template, con le chiavi `username` e `password`
+  (autenticazione HTTP basic, come per i GitRepository di Flux): per GitLab va bene un deploy
+  token con `read_repository`.
 
 All'avvio dello step il Workflow **copia** i file della revisione corrente in una ConfigMap
 immutabile di cui è owner (le revisioni successive non cambiano uno step già partito) e crea un Job che monta

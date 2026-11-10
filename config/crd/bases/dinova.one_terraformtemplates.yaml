@@ -18,6 +18,10 @@ spec:
     - jsonPath: .status.revision
       name: Revision
       type: integer
+    - jsonPath: .status.git.commit
+      name: Commit
+      priority: 1
+      type: string
     - jsonPath: .status.conditions[?(@.type=='Ready')].status
       name: Ready
       type: string
@@ -60,9 +64,11 @@ spec:
                 type: boolean
               files:
                 description: |-
-                  Files are the Terraform files. Names ending in .tf.tmpl are rendered by
-                  terraform-engine (<FGT_XXX> placeholders and <FGT_FOR_STR> loops) against the
-                  step's input variables; plain .tf files are used as they are.
+                  Files are the Terraform files read from ConfigMaps. Names ending in .tf.tmpl are
+                  rendered by terraform-engine (<FGT_XXX> placeholders and <FGT_FOR_STR> loops) against
+                  the step's input variables; plain .tf files are used as they are. They can be used
+                  together with Git, for example to add a file that only Latch needs to a module read
+                  from git; a name may not come from both.
                 items:
                   description: |-
                     TerraformFile is one file of a TerraformTemplate, read from a key of an immutable ConfigMap
@@ -99,11 +105,64 @@ spec:
                   - name
                   type: object
                 maxItems: 32
-                minItems: 1
                 type: array
                 x-kubernetes-list-map-keys:
                 - name
                 x-kubernetes-list-type: map
+              git:
+                description: Git reads the Terraform files from one directory of a
+                  git repository.
+                properties:
+                  path:
+                    description: |-
+                      Path is the directory to read, relative to the root of the repository. Empty or "."
+                      is the root. Every segment starts with a letter, a digit or "_", so ".." is refused.
+                    maxLength: 512
+                    pattern: ^(\.|[A-Za-z0-9_][A-Za-z0-9._-]*(/[A-Za-z0-9_][A-Za-z0-9._-]*)*)?$
+                    type: string
+                  ref:
+                    description: Ref is the branch, tag or commit to read.
+                    properties:
+                      branch:
+                        maxLength: 255
+                        minLength: 1
+                        type: string
+                      commit:
+                        description: Commit is a full SHA-1, 40 hexadecimal digits.
+                        pattern: ^[0-9a-f]{40}$
+                        type: string
+                      tag:
+                        maxLength: 255
+                        minLength: 1
+                        type: string
+                    type: object
+                    x-kubernetes-validations:
+                    - message: branch and tag cannot be used together
+                      rule: '!(has(self.branch) && has(self.tag))'
+                    - message: set branch, tag or commit
+                      rule: has(self.branch) || has(self.tag) || has(self.commit)
+                  secretRef:
+                    description: |-
+                      SecretRef names a Secret in the template's namespace with the keys username and
+                      password, sent with HTTP basic authentication: for example a GitLab deploy token with
+                      read_repository. Omit it for a public repository.
+                    properties:
+                      name:
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  url:
+                    description: URL of the repository, over HTTPS.
+                    maxLength: 2048
+                    pattern: ^https://[^\s]+$
+                    type: string
+                required:
+                - ref
+                - url
+                type: object
               revisionHistoryLimit:
                 default: 10
                 description: |-
@@ -113,9 +172,10 @@ spec:
                 maximum: 100
                 minimum: 1
                 type: integer
-            required:
-            - files
             type: object
+            x-kubernetes-validations:
+            - message: set git, files or both
+              rule: has(self.git) || (has(self.files) && size(self.files) > 0)
           status:
             description: status is the current revision of the files
             properties:
@@ -123,8 +183,8 @@ spec:
                 description: |-
                   Conditions has Ready: True when the current revision matches the spec and its
                   ConfigMaps, False with the reason when the files cannot be read (a ConfigMap or a key is
-                  missing, or a ConfigMap is not immutable and mutable sources are not allowed). A Workflow runs a template only when it is
-                  Ready.
+                  missing, a ConfigMap is not immutable and mutable sources are not allowed, or the git
+                  repository cannot be read). A Workflow runs a template only when it is Ready.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -187,6 +247,37 @@ spec:
                 description: Digest is the SHA-256 of the files of the current revision,
                   as "sha256:<hex>".
                 type: string
+              git:
+                description: Git is the commit the files of spec.git were read from.
+                properties:
+                  commit:
+                    description: Commit is the SHA-1 of the commit that was read.
+                    type: string
+                  files:
+                    description: Files are the names of the files read from git.
+                    items:
+                      type: string
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  path:
+                    type: string
+                  ref:
+                    type: string
+                  refresh:
+                    description: Refresh is the value of the annotation dinova.one/git-refresh
+                      when the source was read.
+                    type: string
+                  url:
+                    description: |-
+                      URL, Ref and Path are the source that was read; Ref is "branch/<name>", "tag/<name>"
+                      or "commit".
+                    type: string
+                required:
+                - commit
+                - files
+                - ref
+                - url
+                type: object
               observedGeneration:
                 description: ObservedGeneration is the generation of the spec this
                   status describes.
