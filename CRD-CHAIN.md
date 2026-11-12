@@ -176,7 +176,10 @@ WorkflowPipeline  (parametri, fasi con dependsOn)
   Una fase Workflow diventa invece `Outdated`, e si rilancia scrivendo il suo run in
   `spec.rerun`, o da sola con `rerunOnChange` se ogni suo step API è una GET o `idempotent`.
 - Gli output sensibili non passano tra le fasi.
-- Cancellare la pipeline cancella le fasi in ordine inverso alle dipendenze.
+- Una fase può leggere l'output di un'altra pipeline dello stesso namespace
+  (`valueFrom.pipeline`): aspetta `Pending` che esista e lo pubblichi, senza `dependsOn`.
+- Cancellare la pipeline cancella le fasi in ordine inverso alle dipendenze. Una pipeline letta
+  da altre aspetta che quelle siano sparite (`ReadByPipelines`).
 
 Dettagli nel [README](README.md#workflowpipeline-un-processo-in-più-fasi); esempio in
 [config/samples/newk8scluster/](config/samples/newk8scluster/pipeline.yaml).

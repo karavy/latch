@@ -24,6 +24,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	dinovav1alpha1 "github.com/karavy/latch/api/v1alpha1"
@@ -52,12 +53,19 @@ func (r *WorkflowPipelineReconciler) Reconcile(ctx context.Context, req ctrl.Req
 }
 
 // SetupWithManager sets up the controller with the Manager. A pipeline watches the objects of
-// its stages, whose status says when the next stages can start, and the WorkflowTemplates they
-// run, which decide the parameters a stage takes.
+// its stages, whose status says when the next stages can start, the WorkflowTemplates they
+// run, which decide the parameters a stage takes, and the pipelines it reads outputs of or that
+// read its outputs (valueFrom.pipeline): a stage waits for them, and a deletion for its readers.
 func (r *WorkflowPipelineReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &dinovav1alpha1.WorkflowPipeline{}, pipeline.TemplateIndex,
 		func(object client.Object) []string {
 			return pipeline.TemplateNames(object.(*dinovav1alpha1.WorkflowPipeline))
+		}); err != nil {
+		return err
+	}
+	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &dinovav1alpha1.WorkflowPipeline{}, pipeline.ReadIndex,
+		func(object client.Object) []string {
+			return pipeline.ReadPipelines(object.(*dinovav1alpha1.WorkflowPipeline))
 		}); err != nil {
 		return err
 	}
@@ -66,6 +74,7 @@ func (r *WorkflowPipelineReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&dinovav1alpha1.WorkflowInstance{}).
 		Owns(&dinovav1alpha1.Workflow{}).
 		Watches(&dinovav1alpha1.WorkflowTemplate{}, handler.EnqueueRequestsFromMapFunc(r.pipelinesRunning)).
+		Watches(&dinovav1alpha1.WorkflowPipeline{}, handler.EnqueueRequestsFromMapFunc(r.relatedPipelines)).
 		Named("workflowpipeline").
 		Complete(r)
 }
@@ -79,6 +88,27 @@ func (r *WorkflowPipelineReconciler) pipelinesRunning(ctx context.Context, templ
 	requests := make([]reconcile.Request, 0, len(pipelines.Items))
 	for _, item := range pipelines.Items {
 		requests = append(requests, reconcile.Request{NamespacedName: types.NamespacedName{Namespace: item.Namespace, Name: item.Name}})
+	}
+	return requests
+}
+
+// relatedPipelines returns, for a pipeline that changed or went away, the pipelines that read
+// its outputs and those whose outputs it reads.
+func (r *WorkflowPipelineReconciler) relatedPipelines(ctx context.Context, object client.Object) []reconcile.Request {
+	names := map[string]bool{}
+	readers, err := pipeline.Readers(ctx, r.Client, object)
+	if err != nil {
+		logf.FromContext(ctx).Error(err, "Could not list the pipelines that read a WorkflowPipeline", "name", object.GetName())
+	}
+	for _, name := range readers {
+		names[name] = true
+	}
+	for _, name := range pipeline.ReadPipelines(object.(*dinovav1alpha1.WorkflowPipeline)) {
+		names[name] = true
+	}
+	requests := make([]reconcile.Request, 0, len(names))
+	for name := range names {
+		requests = append(requests, reconcile.Request{NamespacedName: types.NamespacedName{Namespace: object.GetNamespace(), Name: name}})
 	}
 	return requests
 }

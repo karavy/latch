@@ -273,6 +273,24 @@ Esempio completo, costruito su [FLUSSO.md](config/samples/newk8scluster/FLUSSO.m
   come testo JSON (nel template: `asNumber`, `asJSON`). Una fase che legge un output deve
   dipendere, anche indirettamente, dalla fase che lo pubblica. Gli output `sensitive` non si
   passano: finirebbero in chiaro nella spec della fase.
+- **Output di un'altra pipeline.** Con `valueFrom.pipeline` una fase legge l'output di una fase
+  di un'altra WorkflowPipeline dello stesso namespace, per esempio la pipeline di un tenant
+  condivisa dalle pipeline dei suoi cluster:
+  ```yaml
+  - name: fortigate-port
+    parameters:
+      - name: deliveryJobId
+        valueFrom: {pipeline: acme-tenant, stage: fortigate, step: wait-deliver, output: id}
+    workflow: {templateRef: {name: fgt-port}}
+  ```
+  Non serve `dependsOn`: la fase resta `Pending` finché l'altra pipeline non esiste
+  (`WaitingForPipeline`) e la sua fase non ha pubblicato l'output (`WaitingForOutput`). Le
+  regole sono quelle di `valueFrom` (run corrente o run riuscito più recente, output non
+  sensibili, `Outdated` o nuova revisione se l'output cambia). La fase è `Failed` se l'altra
+  pipeline non ha quella fase (`StageNotFound`) o è in cancellazione (`PipelineDeleting`).
+  `pipeline` uguale al nome della pipeline stessa vale come `valueFrom` normale, con
+  `dependsOn` obbligatorio. Due pipeline che si leggono a vicenda, anche attraverso altre,
+  sono rifiutate entrambe (`InvalidPipeline`) e non avviano fasi.
 - **Fasi istanza.** La pipeline tiene la spec dell'istanza allineata alla fase (`interval`,
   `approval`, `approvePlan`, `acceptStateHolds`…: si modificano nella pipeline, non
   nell'istanza). Se un output letto cambia, cambia la revisione dell'istanza, che riapplica da
@@ -305,6 +323,14 @@ Esempio completo, costruito su [FLUSSO.md](config/samples/newk8scluster/FLUSSO.m
   `deletionPolicy: Destroy` distrugge prima le sue risorse, un Workflow esegue i suoi
   `deleteSteps`: la pipeline (finalizer `dinova.one/pipeline-deletion`) aspetta che ognuno sia
   sparito.
+
+  Una pipeline letta da altre (`valueFrom.pipeline`) non cancella niente finché quelle
+  esistono, anche se sono a loro volta in cancellazione: resta con `Ready=False`, motivo
+  `ReadByPipelines`, e le elenca nel messaggio. Si cancellano prima le pipeline che leggono.
+  Se le pipeline si leggono a vicenda e sono tutte in cancellazione il motivo è `ReadCycle`:
+  si toglie il `valueFrom.pipeline` da una di loro (la spec resta modificabile durante la
+  cancellazione) e la cancellazione riparte. Il finalizer va tolto a mano solo per
+  rinunciare alla pulizia.
 - **Un oggetto, un proprietario.** Non creare a mano istanze o Workflow con i nomi delle fasi, e
   non usare un'istanza o un Workflow a mano sugli state Terraform di una fase.
 
