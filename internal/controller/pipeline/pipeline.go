@@ -37,6 +37,8 @@ const (
 	RunAnnotation = "dinova.one/pipeline-run"
 	// TemplateIndex indexes WorkflowPipelines by the WorkflowTemplates their stages run.
 	TemplateIndex = "spec.stages.templateRef.name"
+	// ReadIndex indexes WorkflowPipelines by the other pipelines whose outputs they read.
+	ReadIndex = "spec.stages.parameters.valueFrom.pipeline"
 	// finalizer keeps a pipeline until the objects of its stages are deleted, in the opposite
 	// order of their dependencies.
 	finalizer = "dinova.one/pipeline-deletion"
@@ -105,6 +107,17 @@ func (h *Handler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result,
 	if err != nil {
 		setReady(pipeline, metav1.ConditionFalse, "InvalidPipeline", err.Error())
 		return ctrl.Result{}, h.Client.Status().Update(ctx, pipeline)
+	}
+	if len(ReadPipelines(pipeline)) > 0 {
+		pipelines, err := h.namespacePipelines(ctx, pipeline)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if cycle := readCycle(pipelines, pipeline.Name); cycle != nil {
+			setReady(pipeline, metav1.ConditionFalse, "InvalidPipeline", fmt.Sprintf(
+				"Pipelines %s read each other's outputs: a pipeline cannot read its own, even through others", strings.Join(cycle, ", ")))
+			return ctrl.Result{}, h.Client.Status().Update(ctx, pipeline)
+		}
 	}
 	kids, err := h.children(ctx, pipeline)
 	if err != nil {
@@ -406,22 +419,79 @@ func ReadPipelines(pipeline *dinovav1alpha1.WorkflowPipeline) []string {
 	return slices.Sorted(maps.Keys(names))
 }
 
-// Readers lists, sorted, the other pipelines of the namespace that read outputs of a pipeline,
-// those being deleted included: they still need its stages for their own deletion.
-func Readers(ctx context.Context, c client.Client, pipeline client.Object) ([]string, error) {
+// Readers lists the other pipelines of the namespace that read outputs of a pipeline, through
+// ReadIndex: it needs a client that reads the manager's cache.
+func Readers(ctx context.Context, c client.Reader, pipeline client.Object) ([]string, error) {
 	list := &dinovav1alpha1.WorkflowPipelineList{}
-	if err := c.List(ctx, list, client.InNamespace(pipeline.GetNamespace())); err != nil {
+	if err := c.List(ctx, list, client.InNamespace(pipeline.GetNamespace()), client.MatchingFields{ReadIndex: pipeline.GetName()}); err != nil {
 		return nil, err
 	}
-	var readers []string
+	readers := make([]string, 0, len(list.Items))
+	for _, item := range list.Items {
+		readers = append(readers, item.Name)
+	}
+	return readers, nil
+}
+
+// namespacePipelines returns the pipelines of a pipeline's namespace by name, with the pipeline
+// as it was read for this reconcile.
+func (h *Handler) namespacePipelines(ctx context.Context, pipeline *dinovav1alpha1.WorkflowPipeline) (map[string]*dinovav1alpha1.WorkflowPipeline, error) {
+	list := &dinovav1alpha1.WorkflowPipelineList{}
+	if err := h.Client.List(ctx, list, client.InNamespace(pipeline.Namespace)); err != nil {
+		return nil, err
+	}
+	pipelines := map[string]*dinovav1alpha1.WorkflowPipeline{}
 	for i := range list.Items {
-		item := &list.Items[i]
-		if item.Name != pipeline.GetName() && slices.Contains(ReadPipelines(item), pipeline.GetName()) {
+		pipelines[list.Items[i].Name] = &list.Items[i]
+	}
+	pipelines[pipeline.Name] = pipeline
+	return pipelines, nil
+}
+
+// readersOf lists, sorted, the pipelines that read outputs of the named one, those being
+// deleted included: they still need its stages for their own deletion.
+func readersOf(pipelines map[string]*dinovav1alpha1.WorkflowPipeline, name string) []string {
+	var readers []string
+	for _, item := range pipelines {
+		if slices.Contains(ReadPipelines(item), name) {
 			readers = append(readers, item.Name)
 		}
 	}
 	sort.Strings(readers)
-	return readers, nil
+	return readers
+}
+
+// readCycle returns the pipelines through which the named one reads its own outputs, from it
+// back to it, or nil when it does not.
+func readCycle(pipelines map[string]*dinovav1alpha1.WorkflowPipeline, name string) []string {
+	path := []string{name}
+	visited := map[string]bool{name: true}
+	var visit func(current string) bool
+	visit = func(current string) bool {
+		item := pipelines[current]
+		if item == nil {
+			return false
+		}
+		for _, next := range ReadPipelines(item) {
+			if next == name {
+				path = append(path, name)
+				return true
+			}
+			if !visited[next] {
+				visited[next] = true
+				path = append(path, next)
+				if visit(next) {
+					return true
+				}
+				path = path[:len(path)-1]
+			}
+		}
+		return false
+	}
+	if visit(name) {
+		return path
+	}
+	return nil
 }
 
 func stageNamed(pipeline *dinovav1alpha1.WorkflowPipeline, name string) dinovav1alpha1.WorkflowPipelineStage {
@@ -632,7 +702,12 @@ func (h *Handler) workflowStage(ctx context.Context, pipeline *dinovav1alpha1.Wo
 	}
 	parameters, unresolved, err := h.values(ctx, pipeline, stage, template, kids)
 	if err != nil || unresolved != nil {
-		// The values cannot be compared now: the run stays as it is.
+		// The values cannot be compared now: the run stays as it is, but a stage that cannot
+		// get them until the spec changes (as when the pipeline it reads is being deleted)
+		// is Failed, as an instance stage is.
+		if unresolved != nil && unresolved.failed {
+			unresolved.apply(status)
+		}
 		return err
 	}
 	status.Changed = changedParameters(current.Spec.Templates[0].Parameters, parameters)
@@ -750,16 +825,22 @@ func (h *Handler) reconcileDeletion(ctx context.Context, pipeline *dinovav1alpha
 	if !controllerutil.ContainsFinalizer(pipeline, finalizer) {
 		return ctrl.Result{}, nil
 	}
-	readers, err := Readers(ctx, h.Client, pipeline)
+	pipelines, err := h.namespacePipelines(ctx, pipeline)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	if len(readers) > 0 {
-		message := fmt.Sprintf("Read by pipelines %s: deleted once they are gone", strings.Join(readers, ", "))
+	if readers := readersOf(pipelines, pipeline.Name); len(readers) > 0 {
+		// The readers go first. A cycle is not broken here: the order of the deletions is
+		// decided by removing valueFrom.pipeline from one of the pipelines.
+		reason, message := "ReadByPipelines", fmt.Sprintf("Read by pipelines %s: deleted once they are gone", strings.Join(readers, ", "))
+		if cycle := readCycle(pipelines, pipeline.Name); cycle != nil {
+			reason, message = "ReadCycle", fmt.Sprintf(
+				"Pipelines %s read each other's outputs: remove valueFrom.pipeline from one of them to delete them in order", strings.Join(cycle, ", "))
+		}
 		for i := range pipeline.Status.Stages {
 			pipeline.Status.Stages[i].Phase, pipeline.Status.Stages[i].Message = phaseDeleting, message
 		}
-		setReady(pipeline, metav1.ConditionFalse, "ReadByPipelines", message)
+		setReady(pipeline, metav1.ConditionFalse, reason, message)
 		return ctrl.Result{}, h.Client.Status().Update(ctx, pipeline)
 	}
 	kids, err := h.children(ctx, pipeline)

@@ -24,6 +24,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	dinovav1alpha1 "github.com/karavy/latch/api/v1alpha1"
@@ -62,6 +63,12 @@ func (r *WorkflowPipelineReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		}); err != nil {
 		return err
 	}
+	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &dinovav1alpha1.WorkflowPipeline{}, pipeline.ReadIndex,
+		func(object client.Object) []string {
+			return pipeline.ReadPipelines(object.(*dinovav1alpha1.WorkflowPipeline))
+		}); err != nil {
+		return err
+	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&dinovav1alpha1.WorkflowPipeline{}).
 		Owns(&dinovav1alpha1.WorkflowInstance{}).
@@ -89,10 +96,12 @@ func (r *WorkflowPipelineReconciler) pipelinesRunning(ctx context.Context, templ
 // its outputs and those whose outputs it reads.
 func (r *WorkflowPipelineReconciler) relatedPipelines(ctx context.Context, object client.Object) []reconcile.Request {
 	names := map[string]bool{}
-	if readers, err := pipeline.Readers(ctx, r.Client, object); err == nil {
-		for _, name := range readers {
-			names[name] = true
-		}
+	readers, err := pipeline.Readers(ctx, r.Client, object)
+	if err != nil {
+		logf.FromContext(ctx).Error(err, "Could not list the pipelines that read a WorkflowPipeline", "name", object.GetName())
+	}
+	for _, name := range readers {
+		names[name] = true
 	}
 	for _, name := range pipeline.ReadPipelines(object.(*dinovav1alpha1.WorkflowPipeline)) {
 		names[name] = true

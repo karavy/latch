@@ -98,6 +98,9 @@ var _ = Describe("WorkflowPipeline reading another pipeline", func() {
 			HaveField("Message", ContainSubstring("Read by pipelines xp-cluster"))))
 		Expect(stageStatus(current, "fgt").Phase).To(Equal("Deleting"))
 		Expect(workflowExists("xp-tenant-fgt-2")).To(BeTrue(), "the stages of a pipeline that is read are not deleted")
+		Expect(stageStatus(cluster.reconcile(), "connect")).To(And(HaveField("Phase", "Failed"),
+			HaveField("Message", "Pipeline xp-tenant, whose output id of step deliver of stage fgt this stage reads, is being deleted")),
+			"a Workflow stage that already ran shows that it reads a pipeline being deleted")
 
 		By("deleting it once its readers are gone")
 		Expect(k8sClient.Delete(ctx, cluster.reconcile())).To(Succeed())
@@ -133,5 +136,54 @@ var _ = Describe("WorkflowPipeline reading another pipeline", func() {
 		current = reader.reconcile()
 		Expect(pipelineReady(current).Message).To(ContainSubstring(`reads an output of stage "src", which the stage does not depend on`))
 		Expect(pipeline.ReadPipelines(current)).To(BeEmpty())
+	})
+
+	It("refuses pipelines that read each other, and deletes them in order once the cycle is broken", func() {
+		createTemplates(map[string]dinovav1alpha1.ApiCallTemplateSpec{"xc-use": {Method: http.MethodPost, Endpoint: "https://portal.example/use"}})
+		createAPIWorkflowTemplate("xc-use", false, "id")
+		source := newPipelineUnderTest(&dinovav1alpha1.WorkflowPipeline{
+			ObjectMeta: metav1.ObjectMeta{Name: "xc-b"},
+			Spec:       dinovav1alpha1.WorkflowPipelineSpec{Stages: []dinovav1alpha1.WorkflowPipelineStage{workflowStage("src", "xc-use", nil)}},
+		})
+		reader := newPipelineUnderTest(&dinovav1alpha1.WorkflowPipeline{
+			ObjectMeta: metav1.ObjectMeta{Name: "xc-a"},
+			Spec: dinovav1alpha1.WorkflowPipelineSpec{Stages: []dinovav1alpha1.WorkflowPipelineStage{
+				workflowStage("use", "xc-use", []dinovav1alpha1.WorkflowPipelineParameter{fromPipeline("id", "xc-b", "src", "configure", "id")}),
+			}},
+		})
+		source.reconcile()
+		finishWorkflow("xc-b-src-1", "Succeeded", "configure", map[string]string{"id": "1"}, nil)
+		source.reconcile()
+		reader.reconcile()
+		Expect(workflowExists("xc-a-use-1")).To(BeTrue())
+
+		By("refusing both once they read each other")
+		source.update(func(p *dinovav1alpha1.WorkflowPipeline) {
+			p.Spec.Stages[0].Parameters = []dinovav1alpha1.WorkflowPipelineParameter{fromPipeline("id", "xc-a", "use", "configure", "id")}
+		})
+		Expect(pipelineReady(source.reconcile())).To(And(HaveField("Reason", "InvalidPipeline"),
+			HaveField("Message", ContainSubstring("Pipelines xc-b, xc-a, xc-b read each other's outputs"))))
+		Expect(pipelineReady(reader.reconcile())).To(And(HaveField("Reason", "InvalidPipeline"),
+			HaveField("Message", ContainSubstring("Pipelines xc-a, xc-b, xc-a read each other's outputs"))))
+
+		By("deleting nothing while the cycle stands")
+		Expect(k8sClient.Delete(ctx, reader.reconcile())).To(Succeed())
+		Expect(k8sClient.Delete(ctx, source.reconcile())).To(Succeed())
+		Expect(pipelineReady(reader.reconcile()).Reason).To(Equal("ReadCycle"))
+		Expect(pipelineReady(source.reconcile())).To(And(HaveField("Reason", "ReadCycle"),
+			HaveField("Message", ContainSubstring("remove valueFrom.pipeline from one of them"))))
+		Expect(workflowExists("xc-a-use-1")).To(BeTrue())
+		Expect(workflowExists("xc-b-src-1")).To(BeTrue())
+
+		By("deleting the reader first, then the pipeline it read, once the cycle is broken")
+		source.update(func(p *dinovav1alpha1.WorkflowPipeline) { p.Spec.Stages[0].Parameters = nil })
+		Expect(pipelineReady(source.reconcile()).Reason).To(Equal("ReadByPipelines"))
+		Expect(workflowExists("xc-b-src-1")).To(BeTrue())
+		reader.reconcile()
+		Expect(workflowExists("xc-a-use-1")).To(BeFalse())
+		Expect(reader.reconcile()).To(BeNil())
+		source.reconcile()
+		Expect(workflowExists("xc-b-src-1")).To(BeFalse())
+		Expect(source.reconcile()).To(BeNil())
 	})
 })
