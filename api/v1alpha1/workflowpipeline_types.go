@@ -62,7 +62,8 @@ type WorkflowPipelineStage struct {
 	Name string `json:"name"`
 	// DependsOn names the stages that must be ready before this one starts: a WorkflowInstance
 	// whose Ready condition is True, or a Workflow that succeeded. A stage that reads the
-	// outputs of another (valueFrom) must depend on it, directly or through other stages.
+	// outputs of another of this pipeline (valueFrom) must depend on it, directly or through
+	// other stages. A stage that reads another pipeline waits for it without dependsOn.
 	// +kubebuilder:validation:MaxItems=20
 	// +kubebuilder:validation:items:MaxLength=40
 	// +listType=set
@@ -107,9 +108,20 @@ type WorkflowPipelineParameter struct {
 // text, which the template can read with asNumber or asJSON. Sensitive outputs cannot be
 // passed: the value would be written in the spec of the stage's object.
 type WorkflowPipelineOutputReference struct {
-	// Stage is the stage that publishes the output. The stage that reads it must depend on it.
-	// For a Workflow stage the output is read from its current run, once it succeeded; for a
-	// WorkflowInstance stage, from its newest run that succeeded and published it.
+	// Pipeline is another WorkflowPipeline in the same namespace whose stage publishes the
+	// output, for example the pipeline of a tenant shared by the pipelines of its clusters.
+	// Empty means this pipeline. The stage that reads it waits, Pending, until that pipeline
+	// exists and its stage published the output, and needs no dependsOn on it. While a
+	// pipeline reads its outputs, that pipeline is not deleted: deleting it waits until every
+	// pipeline that reads it is gone.
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$`
+	// +kubebuilder:validation:MaxLength=253
+	// +optional
+	Pipeline string `json:"pipeline,omitempty"`
+	// Stage is the stage that publishes the output. In this pipeline, the stage that reads it
+	// must depend on it. For a Workflow stage the output is read from its current run, once it
+	// succeeded; for a WorkflowInstance stage, from its newest run that succeeded and published
+	// it.
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
 	// +kubebuilder:validation:MaxLength=40
 	Stage string `json:"stage"`

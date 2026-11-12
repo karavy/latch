@@ -175,7 +175,7 @@ func stageOrder(pipeline *dinovav1alpha1.WorkflowPipeline) ([]dinovav1alpha1.Wor
 	for _, stage := range pipeline.Spec.Stages {
 		upstream := ancestors(stages, stage.Name)
 		for _, parameter := range stage.Parameters {
-			if from := parameter.ValueFrom; from != nil && !upstream[from.Stage] {
+			if from := parameter.ValueFrom; from != nil && !external(pipeline, *from) && !upstream[from.Stage] {
 				return nil, fmt.Errorf("parameter %q of stage %q reads an output of stage %q, which the stage does not depend on", parameter.Name, stage.Name, from.Stage)
 			}
 		}
@@ -314,15 +314,39 @@ func (h *Handler) values(ctx context.Context, pipeline *dinovav1alpha1.WorkflowP
 // output reads an output of an earlier stage, as a parameter value: the text of a string, the
 // JSON of anything else. It reads what the Workflow engine published (workflow.StepOutput):
 // from the current run of a Workflow stage once it succeeded, from the newest succeeded run
-// of an instance that published it.
+// of an instance that published it. The stage may be of another pipeline (from.Pipeline).
 func (h *Handler) output(ctx context.Context, pipeline *dinovav1alpha1.WorkflowPipeline, from dinovav1alpha1.WorkflowPipelineOutputReference,
 	kids *children) (string, *problem, error) {
+	source, where := pipeline, "stage "+from.Stage
+	if external(pipeline, from) {
+		where = fmt.Sprintf("stage %s of pipeline %s", from.Stage, from.Pipeline)
+		other := &dinovav1alpha1.WorkflowPipeline{}
+		err := h.Client.Get(ctx, types.NamespacedName{Namespace: pipeline.Namespace, Name: from.Pipeline}, other)
+		switch {
+		case apierrors.IsNotFound(err):
+			return "", &problem{reason: "WaitingForPipeline", message: fmt.Sprintf(
+				"Waiting for pipeline %s, for output %s of step %s of its stage %s", from.Pipeline, from.Output, from.Step, from.Stage)}, nil
+		case err != nil:
+			return "", nil, err
+		case !other.DeletionTimestamp.IsZero():
+			return "", &problem{reason: "PipelineDeleting", failed: true, message: fmt.Sprintf(
+				"Pipeline %s, whose output %s of step %s of stage %s this stage reads, is being deleted", from.Pipeline, from.Output, from.Step, from.Stage)}, nil
+		}
+		if stageNamed(other, from.Stage).Name == "" {
+			return "", &problem{reason: "StageNotFound", failed: true, message: fmt.Sprintf(
+				"Pipeline %s has no stage %s", from.Pipeline, from.Stage)}, nil
+		}
+		source = other
+		if kids, err = h.children(ctx, other); err != nil {
+			return "", nil, err
+		}
+	}
 	var candidates []dinovav1alpha1.Workflow
-	upstream := stageNamed(pipeline, from.Stage)
+	upstream := stageNamed(source, from.Stage)
 	if upstream.Workflow != nil {
 		runs := kids.runs[from.Stage]
 		if len(runs) == 0 || runs[0].Status.Phase != phaseSucceeded {
-			return "", &problem{reason: "WaitingForOutput", message: fmt.Sprintf("Waiting for stage %s to succeed, for output %s of step %s", from.Stage, from.Output, from.Step)}, nil
+			return "", &problem{reason: "WaitingForOutput", message: fmt.Sprintf("Waiting for %s to succeed, for output %s of step %s", where, from.Output, from.Step)}, nil
 		}
 		candidates = runs[:1]
 	} else if item := kids.instances[from.Stage]; item != nil {
@@ -341,7 +365,7 @@ func (h *Handler) output(ctx context.Context, pipeline *dinovav1alpha1.WorkflowP
 		switch {
 		case sensitive:
 			return "", &problem{reason: "SensitiveOutput", failed: true, message: fmt.Sprintf(
-				"Output %s of step %s of stage %s is sensitive: a pipeline does not pass it, since it would be written in the spec of the stage", from.Output, from.Step, from.Stage)}, nil
+				"Output %s of step %s of %s is sensitive: a pipeline does not pass it, since it would be written in the spec of the stage", from.Output, from.Step, where)}, nil
 		case !found:
 			continue
 		}
@@ -352,16 +376,52 @@ func (h *Handler) output(ctx context.Context, pipeline *dinovav1alpha1.WorkflowP
 		}
 		if len(value) > 1024 {
 			return "", &problem{reason: "OutputTooLong", failed: true, message: fmt.Sprintf(
-				"Output %s of step %s of stage %s is longer than a parameter can be (1024 characters)", from.Output, from.Step, from.Stage)}, nil
+				"Output %s of step %s of %s is longer than a parameter can be (1024 characters)", from.Output, from.Step, where)}, nil
 		}
 		return value, nil, nil
 	}
 	if upstream.Workflow != nil {
 		return "", &problem{reason: "OutputMissing", failed: true, message: fmt.Sprintf(
-			"Step %s of stage %s did not publish output %s", from.Step, from.Stage, from.Output)}, nil
+			"Step %s of %s did not publish output %s", from.Step, where, from.Output)}, nil
 	}
 	return "", &problem{reason: "WaitingForOutput", message: fmt.Sprintf(
-		"Waiting for a run of stage %s that publishes output %s of step %s", from.Stage, from.Output, from.Step)}, nil
+		"Waiting for a run of %s that publishes output %s of step %s", where, from.Output, from.Step)}, nil
+}
+
+// external reports whether a reference reads a stage of another pipeline.
+func external(pipeline *dinovav1alpha1.WorkflowPipeline, from dinovav1alpha1.WorkflowPipelineOutputReference) bool {
+	return from.Pipeline != "" && from.Pipeline != pipeline.Name
+}
+
+// ReadPipelines returns, sorted, the other pipelines whose outputs a pipeline reads.
+func ReadPipelines(pipeline *dinovav1alpha1.WorkflowPipeline) []string {
+	names := map[string]bool{}
+	for _, stage := range pipeline.Spec.Stages {
+		for _, parameter := range stage.Parameters {
+			if from := parameter.ValueFrom; from != nil && external(pipeline, *from) {
+				names[from.Pipeline] = true
+			}
+		}
+	}
+	return slices.Sorted(maps.Keys(names))
+}
+
+// Readers lists, sorted, the other pipelines of the namespace that read outputs of a pipeline,
+// those being deleted included: they still need its stages for their own deletion.
+func Readers(ctx context.Context, c client.Client, pipeline client.Object) ([]string, error) {
+	list := &dinovav1alpha1.WorkflowPipelineList{}
+	if err := c.List(ctx, list, client.InNamespace(pipeline.GetNamespace())); err != nil {
+		return nil, err
+	}
+	var readers []string
+	for i := range list.Items {
+		item := &list.Items[i]
+		if item.Name != pipeline.GetName() && slices.Contains(ReadPipelines(item), pipeline.GetName()) {
+			readers = append(readers, item.Name)
+		}
+	}
+	sort.Strings(readers)
+	return readers, nil
 }
 
 func stageNamed(pipeline *dinovav1alpha1.WorkflowPipeline, name string) dinovav1alpha1.WorkflowPipelineStage {
@@ -689,6 +749,18 @@ func setReady(pipeline *dinovav1alpha1.WorkflowPipeline, status metav1.Condition
 func (h *Handler) reconcileDeletion(ctx context.Context, pipeline *dinovav1alpha1.WorkflowPipeline) (ctrl.Result, error) {
 	if !controllerutil.ContainsFinalizer(pipeline, finalizer) {
 		return ctrl.Result{}, nil
+	}
+	readers, err := Readers(ctx, h.Client, pipeline)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if len(readers) > 0 {
+		message := fmt.Sprintf("Read by pipelines %s: deleted once they are gone", strings.Join(readers, ", "))
+		for i := range pipeline.Status.Stages {
+			pipeline.Status.Stages[i].Phase, pipeline.Status.Stages[i].Message = phaseDeleting, message
+		}
+		setReady(pipeline, metav1.ConditionFalse, "ReadByPipelines", message)
+		return ctrl.Result{}, h.Client.Status().Update(ctx, pipeline)
 	}
 	kids, err := h.children(ctx, pipeline)
 	if err != nil {

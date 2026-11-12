@@ -98,7 +98,8 @@ spec:
                       description: |-
                         DependsOn names the stages that must be ready before this one starts: a WorkflowInstance
                         whose Ready condition is True, or a Workflow that succeeded. A stage that reads the
-                        outputs of another (valueFrom) must depend on it, directly or through other stages.
+                        outputs of another of this pipeline (valueFrom) must depend on it, directly or through
+                        other stages. A stage that reads another pipeline waits for it without dependsOn.
                       items:
                         maxLength: 40
                         type: string
@@ -189,11 +190,23 @@ spec:
                                 maxLength: 63
                                 pattern: ^[a-zA-Z][a-zA-Z0-9_-]*$
                                 type: string
+                              pipeline:
+                                description: |-
+                                  Pipeline is another WorkflowPipeline in the same namespace whose stage publishes the
+                                  output, for example the pipeline of a tenant shared by the pipelines of its clusters.
+                                  Empty means this pipeline. The stage that reads it waits, Pending, until that pipeline
+                                  exists and its stage published the output, and needs no dependsOn on it. While a
+                                  pipeline reads its outputs, that pipeline is not deleted: deleting it waits until every
+                                  pipeline that reads it is gone.
+                                maxLength: 253
+                                pattern: ^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$
+                                type: string
                               stage:
                                 description: |-
-                                  Stage is the stage that publishes the output. The stage that reads it must depend on it.
-                                  For a Workflow stage the output is read from its current run, once it succeeded; for a
-                                  WorkflowInstance stage, from its newest run that succeeded and published it.
+                                  Stage is the stage that publishes the output. In this pipeline, the stage that reads it
+                                  must depend on it. For a Workflow stage the output is read from its current run, once it
+                                  succeeded; for a WorkflowInstance stage, from its newest run that succeeded and published
+                                  it.
                                 maxLength: 40
                                 pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
                                 type: string
